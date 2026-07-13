@@ -9,9 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@serwist/next": "^9.5.11",
     "next": "16.2.10",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "serwist": "^9.5.11",
+    "tonal": "^6.4.3",
+    "tone": "^15.1.22"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

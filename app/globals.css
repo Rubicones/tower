@@ -1,26 +1,286 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-background: #05070a;
+  --color-foreground: #e2e8f0;
+  --color-accent: #f59e0b;
+  --color-accent-soft: #fbbf24;
+  --color-muted: #475569;
+  --color-grid: #1e293b;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@keyframes tower-beacon {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.06);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes tower-drift {
+  0% {
+    transform: translateY(0) translateX(0);
+  }
+  100% {
+    transform: translateY(-120px) translateX(24px);
+  }
+}
+
+@keyframes tower-reveal-x {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 0.2;
+  }
+}
+
+@keyframes tower-reveal-y {
+  from {
+    transform: scaleY(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 0.2;
+  }
+}
+
+@keyframes tower-aircraft-blink {
+  0%,
+  92% {
+    opacity: 0;
+  }
+  94% {
+    opacity: 0.9;
+  }
+  96%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes tower-twinkle {
+  0%,
+  100% {
+    opacity: 0.12;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes tower-fly-lr {
+  0% {
+    transform: translate(-10vw, 0);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(110vw, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes tower-fly-rl {
+  0% {
+    transform: translate(110vw, 0);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(-10vw, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes tower-fly-td {
+  0% {
+    transform: translate(0, -12vh);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(0, 112vh);
+    opacity: 0;
+  }
+}
+
+@keyframes tower-fly-du {
+  0% {
+    transform: translate(0, 112vh);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(0, -12vh);
+    opacity: 0;
+  }
+}
+
+@keyframes tower-fly-diag-a {
+  0% {
+    transform: translate(-10vw, -12vh);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(110vw, 112vh);
+    opacity: 0;
+  }
+}
+
+@keyframes tower-fly-diag-b {
+  0% {
+    transform: translate(-10vw, 60vh);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(110vw, -40vh);
+    opacity: 0;
+  }
+}
+
+@keyframes tower-flyby-beacon {
+  0%,
+  46% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+  54%,
+  100% {
+    opacity: 0.2;
+  }
+}
+
+@keyframes tower-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility animate-beacon {
+  animation: tower-beacon 4s ease-in-out infinite;
+}
+@utility animate-drift {
+  animation: tower-drift 90s linear infinite;
+}
+@utility animate-reveal-x {
+  animation: tower-reveal-x 1.6s var(--ease-out-expo) forwards;
+}
+@utility animate-reveal-y {
+  animation: tower-reveal-y 1.6s var(--ease-out-expo) forwards;
+}
+@utility animate-aircraft {
+  animation: tower-aircraft-blink 6s linear infinite;
+}
+@utility animate-twinkle {
+  animation: tower-twinkle 4s ease-in-out infinite;
+}
+@utility animate-fly-lr {
+  animation: tower-fly-lr 30s linear infinite;
+}
+@utility animate-fly-rl {
+  animation: tower-fly-rl 30s linear infinite;
+}
+@utility animate-fly-td {
+  animation: tower-fly-td 30s linear infinite;
+}
+@utility animate-fly-du {
+  animation: tower-fly-du 30s linear infinite;
+}
+@utility animate-fly-diag-a {
+  animation: tower-fly-diag-a 30s linear infinite;
+}
+@utility animate-fly-diag-b {
+  animation: tower-fly-diag-b 30s linear infinite;
+}
+@utility animate-flyby-beacon {
+  animation: tower-flyby-beacon 1.4s ease-in-out infinite;
+}
+@utility animate-tower-in {
+  animation: tower-fade-in 900ms var(--ease-out-expo) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-beacon,
+  .animate-drift,
+  .animate-reveal-x,
+  .animate-reveal-y,
+  .animate-aircraft,
+  .animate-twinkle,
+  .animate-fly-lr,
+  .animate-fly-rl,
+  .animate-fly-td,
+  .animate-fly-du,
+  .animate-fly-diag-a,
+  .animate-fly-diag-b,
+  .animate-flyby-beacon,
+  .animate-tower-in {
+    animation: none;
+  }
+  .animate-reveal-x,
+  .animate-reveal-y {
+    opacity: 0.2;
+    transform: none;
+  }
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  /* Prevent double-tap zoom on interactive controls (iOS) */
+  button,
+  input[type="range"] {
+    touch-action: manipulation;
+  }
 }
