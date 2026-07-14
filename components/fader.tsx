@@ -15,7 +15,7 @@ export interface FaderProps {
  */
 export function Fader({ label, value, onChange, active }: FaderProps) {
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5 sm:gap-2">
       <div className="flex items-end justify-between px-0.5">
         <span className="text-[10px] lowercase opacity-50 tracking-[0.25em]">
           {label}
@@ -28,7 +28,7 @@ export function Fader({ label, value, onChange, active }: FaderProps) {
           {value.toString().padStart(2, "0")}
         </span>
       </div>
-      <div className="group relative flex h-11 items-center">
+      <div className="group relative flex h-9 items-center sm:h-11">
         <div className="absolute inset-x-0 h-px bg-white/5" />
         <div
           className="bg-accent/70 absolute left-0 h-px transition-[width] duration-300 ease-out"

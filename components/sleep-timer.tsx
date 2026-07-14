@@ -16,7 +16,7 @@ export interface SleepTimerProps {
 
 export function SleepTimer({ value, onChange }: SleepTimerProps) {
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col items-center gap-2 sm:gap-3">
       <span
         id="sleep-timer-label"
         className="text-muted text-[9px] uppercase tracking-[0.5em]"
@@ -26,7 +26,7 @@ export function SleepTimer({ value, onChange }: SleepTimerProps) {
       <div
         role="radiogroup"
         aria-labelledby="sleep-timer-label"
-        className="flex gap-4 sm:gap-6"
+        className="flex gap-3 sm:gap-6"
       >
         {PRESETS.map((preset) => {
           const active = value === preset.value;
@@ -38,7 +38,7 @@ export function SleepTimer({ value, onChange }: SleepTimerProps) {
               aria-checked={active}
               aria-label={`sleep timer: ${preset.name}`}
               onClick={() => onChange(preset.value)}
-              className={`focus-visible:ring-accent/50 flex min-h-11 min-w-11 items-center justify-center rounded-sm text-[12px] font-light tracking-widest transition-all duration-500 focus:outline-none focus-visible:ring-2 ${
+              className={`focus-visible:ring-accent/50 flex min-h-10 min-w-10 items-center justify-center rounded-sm text-[12px] font-light tracking-widest transition-all duration-500 focus:outline-none focus-visible:ring-2 sm:min-h-11 sm:min-w-11 ${
                 active ? "text-accent" : "opacity-40 hover:opacity-100"
               }`}
               style={

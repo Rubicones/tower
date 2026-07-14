@@ -78,11 +78,11 @@ export function TowerApp() {
   }, [isPlaying, remainingSeconds]);
 
   return (
-    <div className="selection:bg-accent/30 animate-tower-in relative flex min-h-dvh w-full flex-col overflow-hidden pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+    <div className="selection:bg-accent/30 animate-tower-in relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
       <Atmosphere />
 
       {/* Header */}
-      <header className="relative z-10 flex items-baseline justify-between px-6 pt-5 sm:px-8">
+      <header className="relative z-10 flex shrink-0 items-baseline justify-between px-5 pt-3 sm:px-8 sm:pt-5">
         <h1 className="text-xs font-light lowercase opacity-70 tracking-[0.4em]">
           tower
         </h1>
@@ -94,11 +94,11 @@ export function TowerApp() {
       </header>
 
       {/* Hero play/pause */}
-      <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-6">
+      <main className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-6">
         <PlayButton playing={isPlaying} onToggle={toggle} />
         <p
           aria-live="polite"
-          className={`mt-12 font-mono text-[10px] uppercase transition-colors duration-700 tracking-[0.3em] ${
+          className={`mt-5 font-mono text-[10px] uppercase tracking-[0.3em] transition-colors duration-700 sm:mt-12 ${
             isPlaying ? "text-accent/85" : "text-muted"
           }`}
         >
@@ -107,8 +107,8 @@ export function TowerApp() {
       </main>
 
       {/* Bottom controls */}
-      <footer className="relative z-10 flex flex-col gap-8 px-8 pb-12 sm:px-10">
-        <div className="mx-auto grid w-full max-w-xl grid-cols-2 gap-8 sm:gap-12">
+      <footer className="relative z-10 flex shrink-0 flex-col gap-4 px-6 pb-5 sm:gap-8 sm:px-10 sm:pb-12">
+        <div className="mx-auto grid w-full max-w-xl grid-cols-2 gap-6 sm:gap-12">
           <Fader
             label="radio"
             value={radioVolume}

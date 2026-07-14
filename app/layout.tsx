@@ -137,9 +137,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
+      className={`${inter.variable} ${jetbrainsMono.variable} h-full overflow-hidden antialiased`}
     >
-      <body className="min-h-full overscroll-none">
+      <body className="h-full overflow-hidden overscroll-none">
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
