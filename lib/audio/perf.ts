@@ -30,11 +30,16 @@ export interface AudioQuality {
   /** Human-readable tier, handy for debugging / the dev meter page. */
   tier: "high" | "low";
   /**
-   * AudioContext latency hint. "playback" trades responsiveness for a larger
-   * buffer and far more render-thread headroom — the right call for an ambient
-   * player and the single biggest win against underrun clicks on mobile.
+   * AudioContext latency hint. A category ("playback") lets the browser pick a
+   * large buffer; a *number* (seconds) requests a specific, even larger output
+   * buffer. On mobile we pass an explicit ~0.5s: when the screen turns off the
+   * whole SoC downclocks and the render thread gets starved in bursts, and a
+   * big buffer is the only thing that lets it fall behind for a fraction of a
+   * second and catch back up without underrunning — the continuous-crackle
+   * failure mode. The cost is added output latency this ambient player (nothing
+   * is played in reaction to a tap) never notices.
    */
-  latencyHint: AudioContextLatencyCategory;
+  latencyHint: AudioContextLatencyCategory | number;
 
   /**
    * Tone.Transport scheduling look-ahead (seconds). Every ambient event is
@@ -89,13 +94,19 @@ const HIGH: AudioQuality = {
 
 const LOW: AudioQuality = {
   tier: "low",
-  latencyHint: "playback",
+  // Explicit ~0.5s output buffer: the strongest defense against the render
+  // thread underrunning while a screen-off phone downclocks in bursts.
+  latencyHint: 0.5,
   lookAhead: 0.5,
   updateInterval: 0.1,
   masterReverbEnabled: false,
   masterReverbDecay: 3,
-  atcReverbDecay: 4,
-  ambientReverbDecay: 3.5,
+  // The two convolution reverbs are the heaviest nodes in the graph. Shorter
+  // impulse responses cut their per-block render cost proportionally, which is
+  // what keeps the whole graph inside a throttled screen-off CPU budget. The
+  // shorter tails are barely perceptible under the radio and ambient bed.
+  atcReverbDecay: 2.5,
+  ambientReverbDecay: 2.5,
   pingPongEnabled: false,
   maxPolyphony: 10,
   padMaxVoices: 6,

@@ -105,9 +105,13 @@ export class AudioEngine {
       // the OS throttles background timers (the screen-off failure mode).
       // Both cost latency this ambient player never needs. The clock stays on
       // the "worker" source so it keeps ticking off the main thread.
+      // `latencyHint` may be a number (seconds) on mobile; Tone's option type
+      // only names the string categories, but the underlying AudioContext
+      // accepts a numeric buffer request, so pass it through with a cast.
       tone.setContext(
         new tone.Context({
-          latencyHint: this.quality.latencyHint,
+          latencyHint: this.quality
+            .latencyHint as AudioContextLatencyCategory,
           lookAhead: this.quality.lookAhead,
           updateInterval: this.quality.updateInterval,
           clockSource: "worker",
@@ -175,9 +179,17 @@ export class AudioEngine {
     if (this.fadeGain && this.tone) {
       const now = this.tone.now();
       const gain = this.fadeGain.gain;
+      // Ramp from wherever the gain actually is up to its resting target.
+      // The previous code slammed it to 0 with setValueAtTime — an instant
+      // discontinuity, i.e. a *click*, on every single resume. On Android the
+      // context can suspend/resume repeatedly behind the lock screen, so that
+      // was itself a steady source of clicks. Starting the ramp from the
+      // current value keeps it continuous: no jump, still a short protective
+      // glide that masks any render-restart glitch.
+      const current = gain.value;
       gain.cancelScheduledValues(now);
-      gain.setValueAtTime(0, now);
-      gain.linearRampToValueAtTime(this.fadeTarget, now + 0.25);
+      gain.setValueAtTime(current, now);
+      gain.linearRampToValueAtTime(this.fadeTarget, now + 0.12);
     }
     this.atc?.resumeIfNeeded();
     if (this.keepAlive?.paused) {

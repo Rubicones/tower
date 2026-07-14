@@ -9,6 +9,14 @@ import type { NoteRegistry } from "../note-registry";
 const HUMANIZE_S = 0.08;
 /** ±fraction of velocity/gain randomisation applied per event. */
 const VELOCITY_JITTER = 0.15;
+/**
+ * If a scheduled event drains this far past its intended audio time, skip its
+ * musical action and just reschedule. When a backgrounded phone throttles (or
+ * freezes) the Transport clock, several overdue events would otherwise drain at
+ * once and trigger a cluster of notes at the same instant on wake — a stab /
+ * click. Dropping stale events keeps the bed continuous through screen-off.
+ */
+const STALE_EVENT_S = 0.15;
 
 /** Shared services every layer needs. */
 export interface LayerContext {
@@ -68,7 +76,11 @@ export abstract class ScheduledLayer implements AmbientLayerModule {
     this.eventId = this.ctx.transport.scheduleOnce((time) => {
       this.eventId = null;
       if (!this.running) return;
-      this.tick(this.humanize(time));
+      // Only fire if the event is still timely; a badly overdue one drained
+      // out of a throttled/frozen background clock and would stab on wake.
+      if (this.ctx.tone.now() - time < STALE_EVENT_S) {
+        this.tick(this.humanize(time));
+      }
       if (this.running) this.scheduleNext(this.nextPeriod());
     }, `+${delaySeconds}`);
   }
