@@ -4,15 +4,23 @@ import { midiToFrequency, type Register } from "../harmony-engine";
 import { ScheduledLayer, type LayerContext } from "./base";
 
 const REGISTER: Register = { low: 52, high: 76 };
-const PERIOD_MIN_S = 40;
-const PERIOD_MAX_S = 54; // centred near the ~47 s coprime target
+const PERIOD_MIN_S = 15;
+const PERIOD_MAX_S = 25; // ~20 s avg — noticeably more frequent, still ambient
 const CHORD_MIN = 2;
 const CHORD_MAX = 4;
+/** Chord length range (seconds); long, and long enough to overlap the next. */
+const DURATION_MIN_S = 12;
+const DURATION_MAX_S = 20;
+/** Release tail — the previous chord is still fading as the next blooms in,
+ * so the harmony audibly travels from one chord to the next. */
+const RELEASE_S = 13;
 
 /**
- * Slow-attack / long-release pad chords. On each (roughly 47 s) tick it grows
+ * Slow-attack / long-release pad chords. On each (roughly 20 s) tick it grows
  * a 2–4 note cluster, each note validated consonant against everything already
  * sounding via the HarmonyEngine, with smooth voice-leading between chords.
+ * The chords are long and their release tails overlap the next chord's
+ * slow attack, so the harmony continuously travels rather than restating.
  */
 export class PadLayer extends ScheduledLayer {
   readonly id = "pad";
@@ -26,7 +34,7 @@ export class PadLayer extends ScheduledLayer {
     const { tone } = ctx;
     this.synth = new tone.PolySynth(tone.Synth, {
       oscillator: { type: "triangle" },
-      envelope: { attack: 3.5, decay: 2, sustain: 0.7, release: 9 },
+      envelope: { attack: 4, decay: 2, sustain: 0.7, release: RELEASE_S },
       volume: -15,
     });
     this.synth.maxPolyphony = ctx.quality.padMaxVoices;
@@ -87,8 +95,8 @@ export class PadLayer extends ScheduledLayer {
     }
     if (chord.length === 0) return;
 
-    const duration = randRange(6, 12);
-    const until = now + duration + 9; // include the long release tail
+    const duration = randRange(DURATION_MIN_S, DURATION_MAX_S);
+    const until = now + duration + RELEASE_S; // include the long release tail
     const velocity = this.humanVelocity(0.28);
     for (const midi of chord) {
       this.ctx.registry.add(midi, until);

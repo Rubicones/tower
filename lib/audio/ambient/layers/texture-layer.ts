@@ -4,8 +4,8 @@ import { midiToFrequency, type Register } from "../harmony-engine";
 import { ScheduledLayer, type LayerContext } from "./base";
 
 const REGISTER: Register = { low: 76, high: 99 };
-const PERIOD_MIN_S = 74;
-const PERIOD_MAX_S = 92; // near the ~83 s coprime target
+const PERIOD_MIN_S = 52;
+const PERIOD_MAX_S = 68; // near ~60 s — a touch more high sparkle, still rare
 const NOTE_DURATION_S = 2;
 
 /**

@@ -86,8 +86,8 @@ const HIGH: AudioQuality = {
   atcReverbDecay: 7,
   ambientReverbDecay: 6,
   pingPongEnabled: true,
-  maxPolyphony: 18,
-  padMaxVoices: 10,
+  maxPolyphony: 16,
+  padMaxVoices: 12,
   sidechainPollMs: 50,
   watchdogMeterMs: 100,
 };
@@ -108,8 +108,13 @@ const LOW: AudioQuality = {
   atcReverbDecay: 2.5,
   ambientReverbDecay: 2.5,
   pingPongEnabled: false,
+  // Total voice ceiling stays at the original mobile budget (10) so render
+  // cost is unchanged; the pad may use up to 8 of it, which — with the drone's
+  // 2 sustained voices — lets a chord and the previous chord's release tail
+  // overlap (the "travelling" motion) without Tone ever hitting the limit and
+  // dropping notes from a chord.
   maxPolyphony: 10,
-  padMaxVoices: 6,
+  padMaxVoices: 8,
   sidechainPollMs: 90,
   watchdogMeterMs: 120,
 };
