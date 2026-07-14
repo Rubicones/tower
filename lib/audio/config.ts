@@ -47,11 +47,6 @@ export const SOURCES: readonly SourceSpec[] = [
   },
   {
     kind: "identifier",
-    identifier: "liveatc_1B9-2-Guard_20191230",
-    category: "atc",
-  },
-  {
-    kind: "identifier",
     identifier: "liveatc_1B9-2-CTAF_20191228",
     category: "atc",
   },
@@ -67,14 +62,18 @@ export const SOURCES: readonly SourceSpec[] = [
     category: "nasa",
   },
   {
-    // LiveATC.net's bulk archive.org uploads — real tower/ground/approach/
-    // guard-frequency recordings from thousands of airports worldwide.
-    // ~2.1k candidates; a fraction are monthly .zip bundles with no
-    // transcoded audio (identifier doesn't end in .zip so they aren't
-    // filterable here) — those just resolve to zero entries and cost
-    // nothing beyond one wasted metadata fetch.
+    // LiveATC.net's bulk archive.org uploads — real tower/ground/approach
+    // recordings from thousands of airports worldwide. ~2.1k candidates; a
+    // fraction are monthly .zip bundles with no transcoded audio (identifier
+    // doesn't end in .zip so they aren't filterable here) — those just
+    // resolve to zero entries and cost nothing beyond one wasted metadata
+    // fetch. Guard (121.5) is excluded outright: it's an emergency-monitor
+    // frequency that's near-silent by design — 30-minute recordings of it
+    // are often <20s of actual audio — so even a `require-voice`-verified
+    // landing spot is likely to run straight back into dead air within a
+    // few seconds of playback.
     kind: "search",
-    query: "identifier:liveatc_*",
+    query: "identifier:liveatc_* AND -identifier:*Guard*",
     rows: 150,
     category: "atc",
   },
@@ -83,7 +82,7 @@ export const SOURCES: readonly SourceSpec[] = [
     // dump above) tagged by their uploaders — smaller pool, catches items
     // like individual airport approach/tower sessions posted one-off.
     kind: "search",
-    query: "subject:atc AND mediatype:audio AND -identifier:*.zip",
+    query: "subject:atc AND mediatype:audio AND -identifier:*.zip AND -identifier:*Guard*",
     rows: 100,
     category: "atc",
   },
@@ -192,6 +191,17 @@ export const ATC_CONFIG = {
     minModulationDb: 5,
     /** FFT size for the listen (power of two, 16–16384). */
     fftSize: 1024,
+    /**
+     * A single passing listen only proves the exact landing instant is
+     * voiced — sparse sources (a quiet regional tower, a rarely-used
+     * frequency) can pass that check on a brief blip and then run straight
+     * back into silence a few seconds later, which is exactly the
+     * skip-lands-in-silence-again loop this exists to prevent. When a spot
+     * passes the primary listen, jump `confirmAheadSeconds` further in and
+     * listen again before accepting; only both passing counts as a real
+     * landing. Playback still starts at the original (earlier) offset.
+     */
+    confirmAheadSeconds: 8,
   },
 
   /**

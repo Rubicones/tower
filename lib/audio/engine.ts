@@ -99,7 +99,20 @@ export class AudioEngine {
     // built or started. "playback" (low-power devices) buys a larger audio
     // buffer, which is the main defense against render-thread underrun clicks.
     if (!this.contextReady) {
-      tone.setContext(new tone.Context({ latencyHint: this.quality.latencyHint }));
+      // A larger latency buffer *and* a generous Transport look-ahead: the
+      // buffer is the defense against render-thread underrun clicks, the
+      // look-ahead is the defense against the worker clock falling behind when
+      // the OS throttles background timers (the screen-off failure mode).
+      // Both cost latency this ambient player never needs. The clock stays on
+      // the "worker" source so it keeps ticking off the main thread.
+      tone.setContext(
+        new tone.Context({
+          latencyHint: this.quality.latencyHint,
+          lookAhead: this.quality.lookAhead,
+          updateInterval: this.quality.updateInterval,
+          clockSource: "worker",
+        }),
+      );
       this.contextReady = true;
     }
     await tone.start();

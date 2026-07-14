@@ -12,7 +12,7 @@
  * /public/audio/atc/fallback/), which does not depend on this worker.
  */
 
-const APP_CACHE = "tower-app-v5";
+const APP_CACHE = "tower-app-v6";
 
 const PRECACHE_URLS = [
   "/",
@@ -22,6 +22,7 @@ const PRECACHE_URLS = [
   "/icons/icon-32.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
+  "/icons/icon-192-maskable.png",
   "/icons/icon-512-maskable.png",
   "/icons/apple-touch-icon.png",
   "/audio/silence.mp3",

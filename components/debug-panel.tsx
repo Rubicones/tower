@@ -187,7 +187,8 @@ export function DebugPanel({ debug }: { debug: UseAudioEngineResult["debug"] }) 
     <div
       style={{
         ...panelStyle,
-        width: 360,
+        width: 560,
+        maxWidth: "calc(100vw - 24px)",
         maxHeight: "80vh",
         overflow: "hidden",
         display: "flex",
@@ -292,7 +293,7 @@ export function DebugPanel({ debug }: { debug: UseAudioEngineResult["debug"] }) 
 
       <canvas
         ref={canvasRef}
-        width={336}
+        width={536}
         height={48}
         style={{ margin: "10px 12px", background: "#05070a", borderRadius: 6 }}
       />

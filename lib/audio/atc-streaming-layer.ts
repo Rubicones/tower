@@ -50,7 +50,11 @@ function fallbackEntries(): TapeEntry[] {
  * The streaming ATC layer. Orchestrates the triple-buffered tape deck:
  *
  * - active plays; next is pre-seeked+buffered for the scheduled rotation;
- *   spare is kept ready for silence skips.
+ *   spare is kept ready for silence skips. Both (and every re-arm after a
+ *   switch) are hunted with `require-voice`, not just `avoid-silence` — a
+ *   skip exists to escape dead air/static, so its destination must already
+ *   be verified speech or the listener just lands in another quiet/noisy
+ *   patch and skips again immediately.
  * - Rotation every 60–120 s (equal-power 4–5 s crossfade), interval eased
  *   up after 20 min of continuous play.
  * - A meter+FFT on the pre-effect bus continuously classifies the active
@@ -94,6 +98,8 @@ export class AtcStreamingLayer {
 
   private running = false;
   private disposed = false;
+  /** True while the tab is hidden: rotation/skip/watchdog are frozen. */
+  private suspended = false;
   private crossfadingUntil = 0;
   private startedAt = 0;
 
@@ -184,6 +190,27 @@ export class AtcStreamingLayer {
       onTapeEnded: this.handleTapeEnded,
     });
     [this.active, this.next, this.spare] = this.deck.tapes;
+
+    // `next`/`spare` are armed from whatever manifest existed at the time —
+    // if that was the bundled/stale snapshot, don't wait for the next
+    // scheduled rotation to notice a freshly-discovered broad pool exists.
+    this.playlist.onRefreshed = () => {
+      if (!this.running) return;
+      void this.armTape(
+        this.next,
+        ATC_CONFIG.buffering.minBufferedAheadSeconds,
+        "require-voice",
+      );
+      void this.armTape(
+        this.spare,
+        ATC_CONFIG.buffering.minBufferedAheadSeconds,
+        "require-voice",
+      );
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.handleVisibility);
+    }
   }
 
   async init(): Promise<void> {
@@ -194,6 +221,7 @@ export class AtcStreamingLayer {
   start(): void {
     if (this.running || this.disposed) return;
     this.running = true;
+    this.suspended = false;
     this.startedAt = Date.now();
     this.deck.primeAll();
     this.playlist.refreshIfStale();
@@ -203,6 +231,7 @@ export class AtcStreamingLayer {
 
   stop(): void {
     this.running = false;
+    this.suspended = false;
     this.clearTimers();
     this.deck.haltAll();
     this.resetVoiceTracking();
@@ -223,6 +252,72 @@ export class AtcStreamingLayer {
         // Non-fatal: the normal `waiting`/`error` handling takes over.
       });
     }
+  }
+
+  /**
+   * While the tab is hidden the mobile browser throttles timers to ~1 s and
+   * pauses media elements independently. Running rotations, silence-skips and
+   * the watchdog under those conditions is precisely what clicks and stalls
+   * with the screen off: every crossfade seeks and re-`play()`s an element the
+   * OS has just paused, and the setValueCurveAtTime ramps land on a throttled
+   * clock. So we freeze all of that machinery when hidden and let the one
+   * active tape keep streaming continuously — the seamless, click-free state —
+   * then thaw and resume rotating when the tab comes back to the foreground.
+   */
+  private readonly handleVisibility = (): void => {
+    if (this.disposed || !this.running) return;
+    if (typeof document !== "undefined" && document.hidden) {
+      this.suspendForBackground();
+    } else {
+      this.resumeFromBackground();
+    }
+  };
+
+  private suspendForBackground(): void {
+    if (this.suspended) return;
+    this.suspended = true;
+    // Freeze scheduled work; the active element is left playing untouched.
+    if (this.rotationTimer) {
+      clearTimeout(this.rotationTimer);
+      this.rotationTimer = null;
+    }
+    this.clearPostponePoll();
+    if (this.watchdogInterval) {
+      clearInterval(this.watchdogInterval);
+      this.watchdogInterval = null;
+    }
+    this.skipPending = false;
+    this.resetVoiceTracking();
+  }
+
+  private resumeFromBackground(): void {
+    if (!this.suspended) return;
+    this.suspended = false;
+    if (!this.running) return;
+    // Discard any silence/crossfade state accumulated (or frozen) while hidden
+    // so the watchdog judges only fresh, post-foreground frames.
+    this.crossfadingUntil = 0;
+    this.resetVoiceTracking();
+    // Nudge the active element in case the OS paused it behind the lock screen.
+    this.resumeIfNeeded();
+    // The browser can drop the standby tapes' buffers while hidden; re-arm any
+    // that are no longer ready so the next rotation has a target.
+    if (this.next.state !== "ready") {
+      void this.armTape(
+        this.next,
+        ATC_CONFIG.buffering.minBufferedAheadSeconds,
+        "require-voice",
+      );
+    }
+    if (this.spare.state !== "ready") {
+      void this.armTape(
+        this.spare,
+        ATC_CONFIG.buffering.minBufferedAheadSeconds,
+        "require-voice",
+      );
+    }
+    this.startWatchdog();
+    this.scheduleRotation();
   }
 
   /* ---------------------------------------------------------------- */
@@ -282,6 +377,9 @@ export class AtcStreamingLayer {
     if (this.disposed) return;
     this.stop();
     this.disposed = true;
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.handleVisibility);
+    }
     this.deck.dispose();
     this.watchdog.dispose();
     this.watchdogFft.dispose();
@@ -320,12 +418,12 @@ export class AtcStreamingLayer {
     void this.armTape(
       this.next,
       ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "avoid-silence",
+      "require-voice",
     );
     void this.armTape(
       this.spare,
       ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "avoid-silence",
+      "require-voice",
     );
     this.scheduleRotation();
   }
@@ -427,7 +525,7 @@ export class AtcStreamingLayer {
     void this.armTape(
       freed,
       ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "avoid-silence",
+      "require-voice",
     );
   }
 
@@ -495,6 +593,8 @@ export class AtcStreamingLayer {
   /* ---------------------------------------------------------------- */
 
   private startWatchdog(): void {
+    // Idempotent: resuming from background restarts it, and start() may too.
+    if (this.watchdogInterval) clearInterval(this.watchdogInterval);
     const windowFrames = Math.max(
       1,
       Math.round(
@@ -668,7 +768,7 @@ export class AtcStreamingLayer {
     void this.armTape(
       tape,
       ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "avoid-silence",
+      "require-voice",
     );
   };
 
@@ -740,12 +840,12 @@ export class AtcStreamingLayer {
         void this.armTape(
           this.next,
           ATC_CONFIG.buffering.minBufferedAheadSeconds,
-          "avoid-silence",
+          "require-voice",
         );
         void this.armTape(
           this.spare,
           ATC_CONFIG.buffering.minBufferedAheadSeconds,
-          "avoid-silence",
+          "require-voice",
         );
       }
     } catch {

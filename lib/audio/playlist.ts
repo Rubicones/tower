@@ -290,10 +290,23 @@ function isFresh(manifest: AtcManifest): boolean {
  * the cache is stale. Selection biases against the last 10 picked files
  * AND identifiers so consecutive segments come from different missions.
  */
+const MAX_REFRESH_RETRIES = 5;
+const REFRESH_RETRY_MS = 15_000;
+
 export class Playlist {
   private manifest: AtcManifest;
   private history: TapeEntry[] = [];
   private refreshing = false;
+  private refreshRetries = 0;
+
+  /**
+   * Fired after a refresh actually replaces the manifest. `next`/`spare` (and
+   * every re-arm) are prepared from whatever manifest existed when they were
+   * armed — without this, a session that started on the bundled/stale
+   * snapshot wouldn't reflect a newly-discovered broad pool until the next
+   * scheduled rotation happened to re-arm from the updated manifest naturally.
+   */
+  onRefreshed: (() => void) | null = null;
 
   constructor() {
     this.manifest = readStoredManifest() ?? SNAPSHOT;
@@ -306,6 +319,10 @@ export class Playlist {
   /** Kick off a background refresh if the cached manifest is stale. */
   refreshIfStale(): void {
     if (this.refreshing || isFresh(this.manifest)) return;
+    this.runRefresh();
+  }
+
+  private runRefresh(): void {
     this.refreshing = true;
     void this.refresh().finally(() => {
       this.refreshing = false;
@@ -326,12 +343,29 @@ export class Playlist {
             r.status === "fulfilled",
         )
         .flatMap((r) => r.value);
-      if (entries.length === 0) return; // keep whatever we had
+      if (entries.length === 0) {
+        // Every identifier failed (or discovery itself came back empty) —
+        // likely transient (rate limit, blip). Keep whatever we had and try
+        // again shortly rather than stranding the whole session on it.
+        this.scheduleRetry();
+        return;
+      }
       this.manifest = { savedAt: Date.now(), entries };
       writeStoredManifest(this.manifest);
+      this.refreshRetries = 0;
+      this.onRefreshed?.();
     } catch {
-      // All fetches failed — keep last cached manifest / snapshot.
+      // Discovery itself threw — same treatment as an empty result.
+      this.scheduleRetry();
     }
+  }
+
+  private scheduleRetry(): void {
+    if (this.refreshRetries >= MAX_REFRESH_RETRIES) return;
+    this.refreshRetries += 1;
+    setTimeout(() => {
+      if (!this.refreshing) this.runRefresh();
+    }, REFRESH_RETRY_MS);
   }
 
   /**

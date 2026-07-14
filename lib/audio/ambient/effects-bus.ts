@@ -161,11 +161,34 @@ export class EffectsBus {
     this.envDb = DB_FLOOR;
 
     const pollMs = this.quality.sidechainPollMs;
-    const dt = pollMs / 1000;
-    const attackCoef = Math.exp(-dt / (SIDECHAIN_ATTACK_MS / 1000));
-    const releaseCoef = Math.exp(-dt / (SIDECHAIN_RELEASE_MS / 1000));
+    let lastTickTs = (typeof performance !== "undefined" ? performance : Date).now();
+    let backgroundHeld = false;
 
     this.sidechainTimer = setInterval(() => {
+      // While the tab is hidden, timers throttle to ~1 s. The envelope
+      // follower stepping at that rate would pump the whole bed audibly with
+      // the screen off, so instead release the duck to unity once and stop
+      // reading the meter until the tab is visible again — the ambient bed
+      // just plays open, which is inaudible next to a lock-screen click.
+      if (typeof document !== "undefined" && document.hidden) {
+        if (!backgroundHeld) {
+          this.duck.gain.rampTo(1, 0.5);
+          this.envDb = DB_FLOOR;
+          backgroundHeld = true;
+        }
+        return;
+      }
+      backgroundHeld = false;
+
+      // Derive dt from real elapsed time, not the nominal poll period, so a
+      // throttled or jittery interval can never corrupt the attack/release
+      // coefficients (a wrong dt is what turns a smooth duck into a staircase).
+      const nowTs = (typeof performance !== "undefined" ? performance : Date).now();
+      const dt = Math.min(0.25, Math.max(0.001, (nowTs - lastTickTs) / 1000));
+      lastTickTs = nowTs;
+      const attackCoef = Math.exp(-dt / (SIDECHAIN_ATTACK_MS / 1000));
+      const releaseCoef = Math.exp(-dt / (SIDECHAIN_RELEASE_MS / 1000));
+
       const raw = meter.getValue();
       const level = typeof raw === "number" ? raw : Math.max(...raw);
       const db = Number.isFinite(level) ? Math.max(level, DB_FLOOR) : DB_FLOOR;
@@ -179,7 +202,7 @@ export class EffectsBus {
         Math.max(0, (this.envDb - DUCK_START_DB) / (DUCK_FULL_DB - DUCK_START_DB)),
       );
       const target = 1 - amount * (1 - DUCK_MIN_GAIN);
-      // Ramp over the poll period so consecutive updates join seamlessly.
+      // Ramp over the real elapsed period so consecutive updates join seamlessly.
       this.duck.gain.rampTo(target, dt);
     }, pollMs);
   }

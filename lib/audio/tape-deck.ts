@@ -235,13 +235,22 @@ export class Tape {
     for (let attempt = 0; ; attempt++) {
       const { verdict, avgDb } = await this.prerollListen(generation);
       lastAvgDb = avgDb;
-      const accepted =
+      let accepted =
         mode === "require-voice" ? verdict.isVoice : verdict.hasSignal;
       if (verdict.score > bestScore) {
         bestScore = verdict.score;
         bestOffset = target;
         bestAvgDb = avgDb;
       }
+
+      // A single instant of voice isn't enough on sparse sources (a rarely-
+      // used frequency, a quiet regional tower) — it can be a brief blip
+      // that runs straight back into silence a few seconds later, which is
+      // exactly the skip-lands-in-silence-again loop this guards against.
+      if (accepted && mode === "require-voice") {
+        accepted = await this.confirmSustained(generation, target, minAheadSeconds);
+      }
+
       if (accepted || attempt >= maxAttempts - 1) break;
 
       target = this.clampOffset(
@@ -262,6 +271,33 @@ export class Tape {
     }
     this.normGain = computeNormGain(finalAvgDb);
     return target;
+  }
+
+  /**
+   * A spot that passed the primary listen gets one more check further in,
+   * to rule out a brief blip surrounded by silence. Restores the playhead
+   * to `offset` afterward regardless of outcome — this only ever gates
+   * acceptance, it never changes where playback actually starts.
+   */
+  private async confirmSustained(
+    generation: number,
+    offset: number,
+    minAheadSeconds: number,
+  ): Promise<boolean> {
+    const confirmOffset = this.clampOffset(
+      offset + ATC_CONFIG.voice.confirmAheadSeconds,
+    );
+    // Nothing left to confirm against (landed near the tape tail) — accept
+    // on the primary listen alone rather than reject for lack of runway.
+    if (confirmOffset <= offset) return true;
+
+    this.el.currentTime = confirmOffset;
+    await this.waitForBuffer(generation, minAheadSeconds);
+    const { verdict } = await this.prerollListen(generation);
+
+    this.el.currentTime = offset;
+    await this.waitForBuffer(generation, minAheadSeconds);
+    return verdict.isVoice;
   }
 
   /** Start playing and fade in (equal-power) over `seconds`. */

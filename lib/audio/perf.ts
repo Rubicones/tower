@@ -36,6 +36,19 @@ export interface AudioQuality {
    */
   latencyHint: AudioContextLatencyCategory;
 
+  /**
+   * Tone.Transport scheduling look-ahead (seconds). Every ambient event is
+   * scheduled this far in advance of the audio clock, so the worker/timer that
+   * drains the Transport can fall this many seconds behind — exactly what
+   * mobile browsers do to background timers — without any event landing late.
+   * A late event is a gap; a burst of catch-up events is a click. A generous
+   * look-ahead is the cheapest defense against both while the screen is off.
+   * Larger on weak devices, whose timers are throttled hardest.
+   */
+  lookAhead: number;
+  /** How often the Transport clock wakes to schedule ahead (seconds). */
+  updateInterval: number;
+
   /** Global "air" reverb send in the master chain; skipped entirely on low. */
   masterReverbEnabled: boolean;
   masterReverbDecay: number;
@@ -61,6 +74,8 @@ export interface AudioQuality {
 const HIGH: AudioQuality = {
   tier: "high",
   latencyHint: "playback",
+  lookAhead: 0.3,
+  updateInterval: 0.05,
   masterReverbEnabled: true,
   masterReverbDecay: 5,
   atcReverbDecay: 7,
@@ -75,6 +90,8 @@ const HIGH: AudioQuality = {
 const LOW: AudioQuality = {
   tier: "low",
   latencyHint: "playback",
+  lookAhead: 0.5,
+  updateInterval: 0.1,
   masterReverbEnabled: false,
   masterReverbDecay: 3,
   atcReverbDecay: 4,
