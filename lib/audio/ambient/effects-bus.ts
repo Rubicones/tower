@@ -92,19 +92,31 @@ export class EffectsBus {
       gain: CARVE_GAIN_DB,
     });
     this.mix = new tone.Gain(1);
+    this.pinChannelCount(this.mix);
     this.mix.chain(this.carve, this.duck, this.comp, this.limiter);
 
     // Sum the whole ambient bed to mono at the very end of the bus.
     this.mono = new tone.Mono();
     this.limiter.connect(this.mono);
 
+    // `input`/`reverbInput`/`delayInput` each merge several layers whose
+    // voices connect and disconnect at runtime (PolySynth in particular
+    // allocates/GCs a voice per note — see pad-layer.ts). Left floating,
+    // that flips the channel count reaching `carve`/`reverbHp`/`reverbLp`/
+    // `delayHp`/`delayLp` (all BiquadFilterNodes) on every chord change,
+    // which is what produces "BiquadFilterNode channel count changes may
+    // produce audio glitches". Pinning every merge point to a fixed stereo
+    // count keeps that topology stable regardless of voice churn (same fix
+    // as `Tape.gain` in tape-deck.ts).
     this.input = new tone.Gain(1).connect(this.mix);
+    this.pinChannelCount(this.input);
 
     // Shared reverb return, high/low-passed so tails never muddy the voice.
     this.reverb = new tone.Reverb({ decay: quality.ambientReverbDecay, wet: 1 });
     this.reverbHp = new tone.Filter({ type: "highpass", frequency: RETURN_HP_HZ });
     this.reverbLp = new tone.Filter({ type: "lowpass", frequency: RETURN_LP_HZ });
     this.reverbInput = new tone.Gain(1).connect(this.reverb);
+    this.pinChannelCount(this.reverbInput);
     this.reverb.chain(this.reverbHp, this.reverbLp, this.mix);
 
     // Shared delay return, band-limited the same way.
@@ -112,7 +124,18 @@ export class EffectsBus {
     this.delayHp = new tone.Filter({ type: "highpass", frequency: RETURN_HP_HZ });
     this.delayLp = new tone.Filter({ type: "lowpass", frequency: RETURN_LP_HZ });
     this.delayInput = new tone.Gain(1).connect(this.delay);
+    this.pinChannelCount(this.delayInput);
     this.delay.chain(this.delayHp, this.delayLp, this.mix);
+  }
+
+  private pinChannelCount(node: Gain): void {
+    try {
+      node.channelCount = 2;
+      node.channelCountMode = "explicit";
+      node.channelInterpretation = "speakers";
+    } catch {
+      // Some engines disallow overriding these; the graph still works.
+    }
   }
 
   /** Wait for the reverb impulse responses to render. */

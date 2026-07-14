@@ -35,6 +35,19 @@ function equalPowerCurve(from: number, to: number): number[] {
 }
 
 /**
+ * Linear gain multiplier that would bring `avgDb` to `normalization.targetDb`,
+ * clamped to the configured boost/cut ceilings. `-Infinity`/unmeasured input
+ * (no preroll listen ran, or it sampled true silence) returns `1` — nothing
+ * to correct from.
+ */
+function computeNormGain(avgDb: number): number {
+  const n = ATC_CONFIG.normalization;
+  if (!n.enabled || !Number.isFinite(avgDb)) return 1;
+  const deltaDb = Math.max(-n.maxCutDb, Math.min(n.maxBoostDb, n.targetDb - avgDb));
+  return Math.pow(10, deltaDb / 20);
+}
+
+/**
  * One reusable `<audio>` element wired into the shared ATC bus:
  *
  *   element -> MediaElementSource -> tape gain -> bus (shared effect chain)
@@ -50,6 +63,14 @@ export class Tape {
   readonly gain: Gain;
   entry: TapeEntry | null = null;
   state: TapeState = "idle";
+  /**
+   * Per-tape loudness correction (linear multiplier), computed from the
+   * pre-roll listen's measured level — see `ATC_CONFIG.normalization`. This
+   * is the ceiling `fadeIn` ramps to instead of `1`, so quiet tapes come up
+   * a bit hotter and loud ones are pre-attenuated, rather than every tape
+   * fading to full and the listener hearing the level jump.
+   */
+  private normGain = 1;
 
   private readonly tone: ToneModule;
   private readonly meter: Meter;
@@ -58,6 +79,8 @@ export class Tape {
   private readonly callbacks: TapeCallbacks;
   private generation = 0;
   private waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A `waiting` fired while the tab was hidden; judged once it's visible again. */
+  private pendingWaitCheck = false;
   private disposed = false;
 
   constructor(
@@ -105,6 +128,7 @@ export class Tape {
     el.addEventListener("playing", this.clearWaitingTimer);
     el.addEventListener("canplay", this.clearWaitingTimer);
     el.addEventListener("ended", this.handleEnded);
+    document.addEventListener("visibilitychange", this.handleVisibility);
   }
 
   /**
@@ -133,6 +157,11 @@ export class Tape {
     return 0;
   }
 
+  /** This tape's loudness-normalization correction, in dB (0 = unmeasured/no correction). */
+  normGainDb(): number {
+    return 20 * Math.log10(this.normGain);
+  }
+
   /** Pre-gain RMS of this element's signal, in dB. */
   levelDb(): number {
     const value = this.meter.getValue();
@@ -155,6 +184,10 @@ export class Tape {
     this.entry = entry;
     this.state = "preparing";
     this.gain.gain.value = 0;
+    // Reset before any listen runs — a stale correction from whatever this
+    // reusable element played last must never leak onto new content,
+    // especially when `preroll === "none"` skips the listen entirely.
+    this.normGain = 1;
     this.el.src = entry.url;
     this.el.load();
 
@@ -196,14 +229,18 @@ export class Tape {
     let target = initial;
     let bestOffset = initial;
     let bestScore = -Infinity;
+    let bestAvgDb = -Infinity;
+    let lastAvgDb = -Infinity;
 
     for (let attempt = 0; ; attempt++) {
-      const verdict = await this.prerollListen(generation);
+      const { verdict, avgDb } = await this.prerollListen(generation);
+      lastAvgDb = avgDb;
       const accepted =
         mode === "require-voice" ? verdict.isVoice : verdict.hasSignal;
       if (verdict.score > bestScore) {
         bestScore = verdict.score;
         bestOffset = target;
+        bestAvgDb = avgDb;
       }
       if (accepted || attempt >= maxAttempts - 1) break;
 
@@ -216,11 +253,14 @@ export class Tape {
 
     // Exhausted the hunt without a clear win — drop onto the best spot found
     // (only worth a re-seek + re-buffer when it isn't already where we are).
+    let finalAvgDb = lastAvgDb;
     if (mode === "require-voice" && bestOffset !== target) {
       target = bestOffset;
+      finalAvgDb = bestAvgDb;
       this.el.currentTime = target;
       await this.waitForBuffer(generation, minAheadSeconds);
     }
+    this.normGain = computeNormGain(finalAvgDb);
     return target;
   }
 
@@ -239,7 +279,8 @@ export class Tape {
       throw error;
     }
     if (this.disposed) return;
-    this.applyFade(equalPowerCurve(this.gain.gain.value, 1), seconds);
+    // Ramp to this tape's normalized ceiling, not always 1 — see `normGain`.
+    this.applyFade(equalPowerCurve(this.gain.gain.value, this.normGain), seconds);
   }
 
   /** Fade out over `seconds`, then pause the element. */
@@ -294,6 +335,7 @@ export class Tape {
     this.el.removeEventListener("playing", this.clearWaitingTimer);
     this.el.removeEventListener("canplay", this.clearWaitingTimer);
     this.el.removeEventListener("ended", this.handleEnded);
+    document.removeEventListener("visibilitychange", this.handleVisibility);
     this.el.removeAttribute("src");
     this.source.disconnect();
     this.gain.dispose();
@@ -393,15 +435,22 @@ export class Tape {
   /**
    * Muted listen: play ~1.2 s with gain at 0 while sampling the pre-gain meter
    * (RMS) and FFT (spectrum), then classify the spot as silence / static /
-   * voice. If the element refuses to play we can't listen, so the spot is
-   * accepted as voice.
+   * voice. Also returns the plain average level, reused by `huntForSpot` to
+   * compute this tape's loudness-normalization gain. If the element refuses
+   * to play we can't listen, so the spot is accepted as voice (and left
+   * unnormalized — no measurement to normalize from).
    */
-  private async prerollListen(generation: number): Promise<Verdict> {
+  private async prerollListen(
+    generation: number,
+  ): Promise<{ verdict: Verdict; avgDb: number }> {
     this.gain.gain.value = 0;
     try {
       await this.el.play();
     } catch {
-      return { hasSignal: true, isVoice: true, score: 0 };
+      return {
+        verdict: { hasSignal: true, isVoice: true, score: 0, modulationDb: 0 },
+        avgDb: -Infinity,
+      };
     }
     const frames: FrameFeatures[] = [];
     const samples = Math.ceil(
@@ -420,7 +469,12 @@ export class Tape {
       );
     }
     this.el.pause();
-    return classifyListen(frames);
+    const finiteDb = frames.map((f) => f.db).filter(Number.isFinite);
+    const avgDb =
+      finiteDb.length > 0
+        ? finiteDb.reduce((a, b) => a + b, 0) / finiteDb.length
+        : -Infinity;
+    return { verdict: classifyListen(frames), avgDb };
   }
 
   private fail(reason: string): void {
@@ -434,16 +488,44 @@ export class Tape {
     this.fail(`media error ${this.el.error?.code ?? "unknown"}`);
   };
 
+  /**
+   * `waiting`/`stalled` fire constantly while a mobile tab is backgrounded —
+   * the browser deliberately throttles background work, which looks exactly
+   * like a stall. Judging that as a real failure was demoting the ATC layer
+   * (and cutting audio) purely because the screen was off. While hidden we
+   * just remember the stall happened and judge it once the tab is visible
+   * again; if it already recovered on its own, `playing`/`canplay` will have
+   * cleared this before the check ever runs.
+   */
   private readonly handleWaiting = (): void => {
     if (this.disposed || this.state !== "playing") return;
     if (this.waitingTimer !== null) return;
+    if (typeof document !== "undefined" && document.hidden) {
+      this.pendingWaitCheck = true;
+      return;
+    }
+    this.armWaitingTimer();
+  };
+
+  private armWaitingTimer(): void {
     this.waitingTimer = setTimeout(() => {
       this.waitingTimer = null;
       if (this.state === "playing") this.fail("waiting > 5s");
     }, ATC_CONFIG.buffering.waitingFailureMs);
+  }
+
+  private readonly handleVisibility = (): void => {
+    if (document.hidden || this.disposed) return;
+    if (this.pendingWaitCheck) {
+      this.pendingWaitCheck = false;
+      if (this.state === "playing" && this.waitingTimer === null) {
+        this.armWaitingTimer();
+      }
+    }
   };
 
   private readonly clearWaitingTimer = (): void => {
+    this.pendingWaitCheck = false;
     if (this.waitingTimer !== null) {
       clearTimeout(this.waitingTimer);
       this.waitingTimer = null;

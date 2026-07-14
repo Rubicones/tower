@@ -1,17 +1,23 @@
 import type { MetadataRoute } from "next";
+import { SITE } from "@/lib/site";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "tower",
-    short_name: "tower",
-    description:
-      "Archival air traffic control radio over endless generative ambient. An airport at 3 AM, for sleep.",
+    id: "/",
+    name: SITE.name,
+    short_name: SITE.shortName,
+    description: SITE.description,
     start_url: "/",
-    display: "standalone",
-    orientation: "portrait",
-    background_color: "#05070a",
-    theme_color: "#05070a",
-    categories: ["music", "lifestyle", "health"],
+    scope: "/",
+    display: "fullscreen",
+    display_override: ["fullscreen", "standalone", "minimal-ui"],
+    orientation: "any",
+    background_color: SITE.backgroundColor,
+    theme_color: SITE.themeColor,
+    lang: "en",
+    dir: "ltr",
+    categories: SITE.categories,
+    prefer_related_applications: false,
     icons: [
       {
         src: "/icons/icon-192.png",
@@ -26,7 +32,7 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: "any",
       },
       {
-        src: "/icons/icon-512.png",
+        src: "/icons/icon-512-maskable.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "maskable",

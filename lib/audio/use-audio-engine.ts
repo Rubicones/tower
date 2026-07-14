@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioEngine } from "./engine";
-import type { AtcStatus, TimerPreset } from "./types";
+import type { AtcStatus, DebugEvent, DebugSnapshot, TimerPreset } from "./types";
 
 /** The fade-out occupies the final minute of the sleep timer. */
 const FADE_SECONDS = 60;
 
-const DEFAULT_RADIO_VOLUME = 70;
+const DEFAULT_RADIO_VOLUME = 47; // was 70; x1.5 quieter by default
 const DEFAULT_MUSIC_VOLUME = 45;
 
 export interface UseAudioEngineResult {
@@ -23,6 +23,17 @@ export interface UseAudioEngineResult {
   remainingSeconds: number | null;
   /** Which rung of the ATC failover ladder is currently playing. */
   status: AtcStatus;
+  /**
+   * Dev-only telemetry (see `components/debug-panel.tsx`). Safe to call
+   * before playback starts — snapshot/waveform just return null until the
+   * engine is built.
+   */
+  debug: {
+    enable: () => void;
+    getSnapshot: () => DebugSnapshot | null;
+    getWaveform: () => Float32Array | null;
+    subscribe: (cb: (event: DebugEvent) => void) => () => void;
+  };
 }
 
 /**
@@ -159,6 +170,40 @@ export function useAudioEngine(): UseAudioEngineResult {
     };
   }, []);
 
+  const debugEnable = useCallback(() => {
+    getEngine().enableDebug();
+  }, [getEngine]);
+
+  const debugGetSnapshot = useCallback((): DebugSnapshot | null => {
+    return engineRef.current?.getDebugSnapshot() ?? null;
+  }, []);
+
+  const debugGetWaveform = useCallback((): Float32Array | null => {
+    return engineRef.current?.getDebugWaveform() ?? null;
+  }, []);
+
+  const debugSubscribe = useCallback(
+    (cb: (event: DebugEvent) => void) => {
+      const engine = getEngine();
+      engine.enableDebug();
+      engine.onDebugEvent = cb;
+      return () => {
+        if (engineRef.current) engineRef.current.onDebugEvent = null;
+      };
+    },
+    [getEngine],
+  );
+
+  const debug = useMemo(
+    () => ({
+      enable: debugEnable,
+      getSnapshot: debugGetSnapshot,
+      getWaveform: debugGetWaveform,
+      subscribe: debugSubscribe,
+    }),
+    [debugEnable, debugGetSnapshot, debugGetWaveform, debugSubscribe],
+  );
+
   return {
     isPlaying,
     toggle,
@@ -170,5 +215,6 @@ export function useAudioEngine(): UseAudioEngineResult {
     setTimer,
     remainingSeconds,
     status,
+    debug,
   };
 }

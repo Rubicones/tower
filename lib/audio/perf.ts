@@ -9,12 +9,21 @@
  * exact symptom this profile exists to remove.
  *
  * We therefore detect low-power devices once and hand every subsystem a set of
- * tunables that trims the heaviest work (shorter reverb impulse responses, one
- * fewer reverb, no ping-pong, lower polyphony, slower control-rate polling) and
- * — crucially — asks the browser for a larger audio buffer via the "playback"
- * latency hint. None of this is toggled at runtime: topology is fixed at build
- * time, because changing the graph while audio flows is itself a source of
- * clicks.
+ * tunables that trims the heaviest work on low tiers (shorter reverb impulse
+ * responses, one fewer reverb, no ping-pong, lower polyphony, slower
+ * control-rate polling). None of this is toggled at runtime: topology is fixed
+ * at build time, because changing the graph while audio flows is itself a
+ * source of clicks.
+ *
+ * The "playback" latency hint — a far larger audio buffer in exchange for
+ * ~150-200ms of extra output latency — is requested on *every* tier, not just
+ * low-power ones. This app never needs interactive response time (it's an
+ * ambient background player, nothing is played in reaction to a tap), and a
+ * mobile CPU gets deprioritized the moment the screen locks or the tab is
+ * backgrounded regardless of how many cores it has on paper. A small
+ * "interactive" buffer that was comfortable in the foreground is exactly what
+ * underruns (and clicks) the moment that throttling kicks in, which is the
+ * main background-playback failure mode this profile exists to remove.
  */
 
 export interface AudioQuality {
@@ -51,7 +60,7 @@ export interface AudioQuality {
 
 const HIGH: AudioQuality = {
   tier: "high",
-  latencyHint: "interactive",
+  latencyHint: "playback",
   masterReverbEnabled: true,
   masterReverbDecay: 5,
   atcReverbDecay: 7,

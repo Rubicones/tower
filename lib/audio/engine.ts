@@ -1,8 +1,9 @@
 import type { Gain, Limiter, Reverb } from "tone";
 import { AmbientEngine } from "./ambient/ambient-engine";
 import { AtcStreamingLayer } from "./atc-streaming-layer";
+import { ContextResumer } from "./context-resume";
 import { type AudioQuality, detectQuality } from "./perf";
-import type { AtcStatus, ToneModule } from "./types";
+import type { AtcStatus, DebugEvent, DebugSnapshot, ToneModule } from "./types";
 
 /** Ceiling gains per layer; the ambient layer sits well under the radio. */
 const RADIO_MAX_GAIN = 0.6;
@@ -33,6 +34,8 @@ function sliderToGain(value: number, max: number): number {
 export class AudioEngine {
   /** Notified whenever the ATC failover rung changes. */
   onStatus: ((status: AtcStatus) => void) | null = null;
+  /** Dev-only telemetry stream, proxied straight through from the ATC layer. */
+  onDebugEvent: ((event: DebugEvent) => void) | null = null;
 
   private tone: ToneModule | null = null;
   private building: Promise<void> | null = null;
@@ -53,10 +56,14 @@ export class AudioEngine {
   private ambient: AmbientEngine | null = null;
 
   private keepAlive: HTMLAudioElement | null = null;
+  private resumer: ContextResumer | null = null;
 
   private radioLevel = 70;
   private musicLevel = 45;
   private status: AtcStatus = "streaming";
+  private debugEnabled = false;
+  /** What the fade gain should be resting at; a resume-recovery fade targets this, not always 1. */
+  private fadeTarget: 0 | 1 = 1;
 
   get isRunning(): boolean {
     return this.running;
@@ -64,6 +71,24 @@ export class AudioEngine {
 
   get atcStatus(): AtcStatus {
     return this.status;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Debug telemetry (dev-only overlay)                                  */
+  /* ------------------------------------------------------------------ */
+
+  /** Enable the waveform tap; a no-op once the ATC layer already has one. */
+  enableDebug(): void {
+    this.debugEnabled = true;
+    this.atc?.enableDebugWaveform();
+  }
+
+  getDebugSnapshot(): DebugSnapshot | null {
+    return this.atc?.getDebugSnapshot() ?? null;
+  }
+
+  getDebugWaveform(): Float32Array | null {
+    return this.atc?.getDebugWaveform() ?? null;
   }
 
   /** Start (or resume) playback. Must be called from a user gesture. */
@@ -86,6 +111,7 @@ export class AudioEngine {
     this.startKeepAlive();
     this.atc?.start();
     this.ambient?.start();
+    (this.resumer ??= new ContextResumer(tone, () => this.recoverFromResume())).start();
   }
 
   /** Stop both layers. The graph stays warm for the next `start()`. */
@@ -95,6 +121,7 @@ export class AudioEngine {
     this.ambient?.stop();
     this.cancelFade();
     this.keepAlive?.pause();
+    this.resumer?.stop();
   }
 
   setRadioVolume(value: number): void {
@@ -109,14 +136,40 @@ export class AudioEngine {
 
   /** Sleep timer fired: fade everything to silence over `seconds`. */
   beginFade(seconds: number): void {
+    this.fadeTarget = 0;
     this.fadeGain?.gain.rampTo(0, seconds);
   }
 
   /** Abort an in-progress fade and restore full level. */
   cancelFade(): void {
+    this.fadeTarget = 1;
     if (!this.fadeGain || !this.tone) return;
     this.fadeGain.gain.cancelScheduledValues(this.tone.now());
     this.fadeGain.gain.rampTo(1, 0.3);
+  }
+
+  /**
+   * Called once the AudioContext comes back from a suspend/interruption
+   * (screen lock, backgrounded tab, another app's audio session). The render
+   * thread can restart mid-buffer, which pops if a node was mid-ramp when it
+   * was cut off — so the master fader gets a quick protective fade back up
+   * to wherever it was supposed to be resting (full level, or still fading
+   * out for an active sleep timer). Any audio elements the OS silently
+   * paused are nudged back to life too.
+   */
+  private recoverFromResume(): void {
+    if (!this.running) return;
+    if (this.fadeGain && this.tone) {
+      const now = this.tone.now();
+      const gain = this.fadeGain.gain;
+      gain.cancelScheduledValues(now);
+      gain.setValueAtTime(0, now);
+      gain.linearRampToValueAtTime(this.fadeTarget, now + 0.25);
+    }
+    this.atc?.resumeIfNeeded();
+    if (this.keepAlive?.paused) {
+      void this.keepAlive.play().catch(() => {});
+    }
   }
 
   /** Tear down every node. The engine cannot be restarted afterwards. */
@@ -124,6 +177,7 @@ export class AudioEngine {
     if (this.disposed) return;
     this.pause();
     this.disposed = true;
+    this.resumer?.dispose();
     this.atc?.dispose();
     this.ambient?.dispose();
     this.radioGain?.dispose();
@@ -169,6 +223,8 @@ export class AudioEngine {
       this.status = status;
       this.onStatus?.(status);
     };
+    this.atc.onDebugEvent = (event) => this.onDebugEvent?.(event);
+    if (this.debugEnabled) this.atc.enableDebugWaveform();
     // The ambient engine ducks against the live ATC signal, so hand it the
     // radio output node as its sidechain source.
     this.ambient = new AmbientEngine(

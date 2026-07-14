@@ -32,13 +32,34 @@ export class PadLayer extends ScheduledLayer {
     this.synth.maxPolyphony = ctx.quality.padMaxVoices;
     this.synth.connect(ctx.bus.input);
 
+    // PolySynth allocates a fresh voice per note as chords grow past the
+    // currently-live count, and garbage-collects idle voices back out —
+    // both connect/disconnect from the synth's internal output at runtime.
+    // Left alone that flips the channel count reaching these sends (and, via
+    // them, the shared bus's BiquadFilterNodes) every time a chord grows or
+    // releases, which is exactly what produces "BiquadFilterNode channel
+    // count changes may produce audio glitches". Pin these sends to a fixed
+    // stereo channel count so voice churn downstream never causes a flip
+    // (same fix as `Tape.gain` in tape-deck.ts).
     this.reverbSend = new tone.Gain(0.35);
+    this.pinChannelCount(this.reverbSend);
     this.synth.connect(this.reverbSend);
     this.reverbSend.connect(ctx.bus.reverbInput);
 
     this.delaySend = new tone.Gain(0.12);
+    this.pinChannelCount(this.delaySend);
     this.synth.connect(this.delaySend);
     this.delaySend.connect(ctx.bus.delayInput);
+  }
+
+  private pinChannelCount(node: Gain): void {
+    try {
+      node.channelCount = 2;
+      node.channelCountMode = "explicit";
+      node.channelInterpretation = "speakers";
+    } catch {
+      // Some engines disallow overriding these; the graph still works.
+    }
   }
 
   protected firstDelay(): number {

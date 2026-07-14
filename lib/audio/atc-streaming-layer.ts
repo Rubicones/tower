@@ -1,20 +1,35 @@
 import type {
   Distortion,
   FeedbackDelay,
+  FFT,
   Filter,
   Gain,
   Meter,
   Mono,
   PingPongDelay,
   Reverb,
+  Waveform,
 } from "tone";
 import { ATC_CONFIG } from "./config";
 import type { AudioQuality } from "./perf";
 import { Playlist } from "./playlist";
 import { randRange } from "./random";
-import type { PrerollMode } from "./signal-detector";
+import {
+  classifyListen,
+  type FrameFeatures,
+  type PrerollMode,
+  spectralFeatures,
+  type Verdict,
+} from "./signal-detector";
 import { Tape, TapeDeck } from "./tape-deck";
-import type { AtcStatus, TapeEntry, ToneModule } from "./types";
+import type {
+  AtcStatus,
+  DebugEvent,
+  DebugSnapshot,
+  DebugTapeInfo,
+  TapeEntry,
+  ToneModule,
+} from "./types";
 
 interface PlayedPosition {
   entry: TapeEntry;
@@ -38,8 +53,12 @@ function fallbackEntries(): TapeEntry[] {
  *   spare is kept ready for silence skips.
  * - Rotation every 60–120 s (equal-power 4–5 s crossfade), interval eased
  *   up after 20 min of continuous play.
- * - A meter on the pre-effect bus watches RMS; silence longer than a
- *   random 2–10 s pause triggers a 1 s crossfade into the spare.
+ * - A meter+FFT on the pre-effect bus continuously classifies the active
+ *   tape (same voice/static discriminator as the startup preroll). Dead air
+ *   *and* sustained carrier hiss/static both count as "not voice"; either
+ *   one, once it runs longer than a random 2–10 s pause, triggers a 1 s
+ *   crossfade into the spare — noise doesn't get to ride out a whole
+ *   rotation just because it clears the RMS floor.
  * - Failover ladder: live stream → previously played (SW-cached)
  *   positions → bundled local files; silent recovery with backoff.
  *
@@ -48,6 +67,8 @@ function fallbackEntries(): TapeEntry[] {
  */
 export class AtcStreamingLayer {
   onStatus: ((status: AtcStatus) => void) | null = null;
+  /** Dev-only telemetry stream — tape switches, skips, failures, mode changes. */
+  onDebugEvent: ((event: DebugEvent) => void) | null = null;
 
   private readonly tone: ToneModule;
   private readonly playlist = new Playlist();
@@ -63,6 +84,9 @@ export class AtcStreamingLayer {
   private readonly pingpong: PingPongDelay | null;
   private readonly reverb: Reverb;
   private readonly watchdog: Meter;
+  private readonly watchdogFft: FFT;
+  /** Lazily created only when a debug panel subscribes (`enableDebugWaveform`). */
+  private debugWaveform: Waveform | null = null;
 
   private active: Tape;
   private next: Tape;
@@ -85,6 +109,16 @@ export class AtcStreamingLayer {
 
   private silenceStartedAt: number | null = null;
   private allowedPauseMs = 0;
+  /** Rolling window of recent bus frames the watchdog classifies against. */
+  private voiceFrames: FrameFeatures[] = [];
+  /** Most recent watchdog frame/verdict — surfaced to the debug panel. */
+  private lastFrame: FrameFeatures = { db: -Infinity, speechRatio: 0, flatness: 1 };
+  private lastVerdict: Verdict = {
+    hasSignal: false,
+    isVoice: false,
+    score: -Infinity,
+    modulationDb: 0,
+  };
   private skipPending = false;
   private skipDeadline = 0;
   private warnedAboutDeadAir = false;
@@ -137,9 +171,13 @@ export class AtcStreamingLayer {
       ].filter((node): node is NonNullable<typeof node> => node !== null),
     );
 
-    // RMS watchdog stays on the pre-effect bus (used for silence trimming).
+    // RMS + spectral watchdog stay on the pre-effect bus (used for
+    // silence/static trimming). Same FFT size as the per-tape preroll listen
+    // so `spectralFeatures`/`classifyListen` behave identically at runtime.
     this.watchdog = new tone.Meter({ smoothing: 0.8 });
+    this.watchdogFft = new tone.FFT({ size: ATC_CONFIG.voice.fftSize, smoothing: 0 });
     this.bus.connect(this.watchdog);
+    this.bus.connect(this.watchdogFft);
 
     this.deck = new TapeDeck(tone, this.bus, {
       onTapeFailure: this.handleTapeFailure,
@@ -167,8 +205,77 @@ export class AtcStreamingLayer {
     this.running = false;
     this.clearTimers();
     this.deck.haltAll();
-    this.silenceStartedAt = null;
+    this.resetVoiceTracking();
     this.skipPending = false;
+  }
+
+  /**
+   * Called after the shared AudioContext comes back from a suspend /
+   * interruption. The context resuming doesn't guarantee the underlying
+   * `<audio>` element is still playing — some mobile browsers pause media
+   * elements independently during the same event — so nudge it back to life
+   * rather than waiting for the 5s `waiting` failure timeout to notice.
+   */
+  resumeIfNeeded(): void {
+    if (!this.running || this.active.state !== "playing") return;
+    if (this.active.el.paused) {
+      void this.active.el.play().catch(() => {
+        // Non-fatal: the normal `waiting`/`error` handling takes over.
+      });
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Debug telemetry (dev-only overlay)                                */
+  /* ---------------------------------------------------------------- */
+
+  /** Lazily taps the bus with a time-domain analyser for a waveform view. */
+  enableDebugWaveform(): void {
+    if (this.debugWaveform || this.disposed) return;
+    this.debugWaveform = new this.tone.Waveform(2048);
+    this.bus.connect(this.debugWaveform);
+  }
+
+  /** Latest time-domain samples off the pre-effect bus, or null if not enabled. */
+  getDebugWaveform(): Float32Array | null {
+    if (!this.debugWaveform) return null;
+    const value = this.debugWaveform.getValue();
+    return value instanceof Float32Array ? value : null;
+  }
+
+  /** Point-in-time snapshot of everything the debug panel needs to render. */
+  getDebugSnapshot(): DebugSnapshot {
+    const describe = (tape: Tape, role: DebugTapeInfo["role"]): DebugTapeInfo => ({
+      role,
+      state: tape.state,
+      identifier: tape.entry?.identifier ?? null,
+      title: tape.entry?.title ?? null,
+      currentTime: Number.isFinite(tape.el.currentTime) ? tape.el.currentTime : null,
+      duration: Number.isFinite(tape.el.duration) ? tape.el.duration : null,
+      bufferedAhead: tape.state === "idle" ? null : tape.bufferedAhead(),
+      normGainDb: tape.normGainDb(),
+    });
+    return {
+      at: Date.now(),
+      mode: this.mode,
+      tapes: [
+        describe(this.active, "active"),
+        describe(this.next, "next"),
+        describe(this.spare, "spare"),
+      ],
+      levelDb: this.lastFrame.db,
+      speechRatio: this.lastFrame.speechRatio,
+      flatness: this.lastFrame.flatness,
+      modulationDb: this.lastVerdict.modulationDb,
+      isVoice: this.lastVerdict.isVoice,
+      hasSignal: this.lastVerdict.hasSignal,
+      silenceMs: this.silenceStartedAt === null ? null : Date.now() - this.silenceStartedAt,
+      allowedPauseMs: this.allowedPauseMs,
+    };
+  }
+
+  private emitDebug(kind: DebugEvent["kind"], message: string): void {
+    this.onDebugEvent?.({ at: Date.now(), kind, message });
   }
 
   dispose(): void {
@@ -177,6 +284,8 @@ export class AtcStreamingLayer {
     this.disposed = true;
     this.deck.dispose();
     this.watchdog.dispose();
+    this.watchdogFft.dispose();
+    this.debugWaveform?.dispose();
     this.bus.dispose();
     this.mono.dispose();
     this.bandpass.dispose();
@@ -201,6 +310,10 @@ export class AtcStreamingLayer {
     if (!this.running) return;
     if (ok) {
       await this.playTape(this.active, ATC_CONFIG.crossfade.startSeconds);
+      this.emitDebug(
+        "start",
+        `playing ${this.active.entry?.title ?? this.active.entry?.identifier ?? "?"} @ ${Math.round(this.active.el.currentTime)}s`,
+      );
     }
     // Pre-buffer the other two in the background regardless; failures
     // route through handleTapeFailure and the ladder.
@@ -265,7 +378,7 @@ export class AtcStreamingLayer {
       }, 3_000);
       return;
     }
-    void this.switchTo("next", ATC_CONFIG.crossfade.rotationSeconds);
+    void this.switchTo("next", ATC_CONFIG.crossfade.rotationSeconds, "rotation");
     this.scheduleRotation();
   }
 
@@ -285,11 +398,15 @@ export class AtcStreamingLayer {
    * immediately starts preparing a new random file+position for the role
    * it inherits.
    */
-  private async switchTo(role: "next" | "spare", seconds: number): Promise<void> {
+  private async switchTo(
+    role: "next" | "spare",
+    seconds: number,
+    reason: string,
+  ): Promise<void> {
     const target = role === "next" ? this.next : this.spare;
     const freed = this.active;
     this.crossfadingUntil = Date.now() + seconds * 1000 + 300;
-    this.silenceStartedAt = null;
+    this.resetVoiceTracking();
 
     try {
       await this.playTape(target, seconds);
@@ -301,6 +418,11 @@ export class AtcStreamingLayer {
     this.active = target;
     if (role === "next") this.next = freed;
     else this.spare = freed;
+
+    this.emitDebug(
+      "switch",
+      `${reason} → ${role} (${target.entry?.title ?? target.entry?.identifier ?? "?"} @ ${Math.round(target.el.currentTime)}s)`,
+    );
 
     void this.armTape(
       freed,
@@ -373,17 +495,37 @@ export class AtcStreamingLayer {
   /* ---------------------------------------------------------------- */
 
   private startWatchdog(): void {
+    const windowFrames = Math.max(
+      1,
+      Math.round(
+        (ATC_CONFIG.silence.voiceWindowSeconds * 1000) /
+          this.quality.watchdogMeterMs,
+      ),
+    );
     this.watchdogInterval = setInterval(() => {
       if (!this.running || this.active.state !== "playing") return;
       if (Date.now() < this.crossfadingUntil) {
-        this.silenceStartedAt = null;
+        this.resetVoiceTracking();
         return;
       }
       const level = this.watchdog.getValue();
       const db = typeof level === "number" ? level : Math.max(...level);
+      const frame = spectralFeatures(
+        db,
+        this.watchdogFft.getValue(),
+        (index) => this.watchdogFft.getFrequencyOfIndex(index),
+      );
+      this.voiceFrames.push(frame);
+      if (this.voiceFrames.length > windowFrames) this.voiceFrames.shift();
+      this.lastFrame = frame;
 
-      if (db >= ATC_CONFIG.silence.thresholdDb) {
-        // Signal present — natural pause never got too long.
+      // Same discriminator the startup preroll uses: dead air *and* carrier
+      // hiss/static both fail `isVoice`, so both get trimmed on the same
+      // 2–10 s clock instead of static riding out a whole rotation because
+      // it happens to clear the RMS floor.
+      const verdict = classifyListen(this.voiceFrames);
+      this.lastVerdict = verdict;
+      if (verdict.isVoice) {
         this.silenceStartedAt = null;
         this.warnedAboutDeadAir = false;
         return;
@@ -417,10 +559,15 @@ export class AtcStreamingLayer {
   /** Skip dead air: crossfade into the spare (does NOT reset rotation). */
   private triggerSilenceSkip(): void {
     if (this.skipPending) return;
+    this.emitDebug(
+      "silence-skip",
+      `not-voice for ${this.allowedPauseMs}ms (db ${this.lastFrame.db.toFixed(1)}, ` +
+        `speech ${this.lastFrame.speechRatio.toFixed(2)}, flat ${this.lastFrame.flatness.toFixed(2)}) — skipping`,
+    );
 
     if (this.tapeReadyForSwitch(this.spare)) {
-      this.silenceStartedAt = null;
-      void this.switchTo("spare", ATC_CONFIG.crossfade.skipSeconds);
+      this.resetVoiceTracking();
+      void this.switchTo("spare", ATC_CONFIG.crossfade.skipSeconds, "silence-skip");
       return;
     }
 
@@ -451,7 +598,13 @@ export class AtcStreamingLayer {
         if (this.active.bufferedAhead() > 1) {
           clearInterval(stallPoll);
           this.skipPending = false;
-          this.silenceStartedAt = null;
+          // The in-place seek jumped the playhead; stale pre-jump frames
+          // must not leak into the post-jump classification.
+          this.resetVoiceTracking();
+          this.emitDebug(
+            "silence-skip",
+            `in-place seek +${Math.round(jump)}s (spare not ready) @ ${Math.round(target)}s`,
+          );
           return;
         }
         if (Date.now() - seekStartedAt > ATC_CONFIG.buffering.seekStallMs) {
@@ -475,8 +628,8 @@ export class AtcStreamingLayer {
       if (this.tapeReadyForSwitch(this.spare)) {
         clearInterval(poll);
         this.skipPending = false;
-        this.silenceStartedAt = null;
-        void this.switchTo("spare", ATC_CONFIG.crossfade.skipSeconds);
+        this.resetVoiceTracking();
+        void this.switchTo("spare", ATC_CONFIG.crossfade.skipSeconds, "silence-skip (held)");
       }
     }, 300);
   }
@@ -488,16 +641,17 @@ export class AtcStreamingLayer {
   private readonly handleTapeFailure = (tape: Tape, reason: string): void => {
     if (!this.running || this.disposed) return;
     console.warn(`[tower] tape ${tape.id} failed: ${reason}`);
+    this.emitDebug("failure", `tape ${tape.id} failed: ${reason}`);
     tape.halt();
     this.registerFailure(reason);
 
     if (tape === this.active) {
       // Emergency switch — never leave the layer silent.
       if (this.tapeReadyForSwitch(this.next)) {
-        void this.switchTo("next", ATC_CONFIG.crossfade.skipSeconds);
+        void this.switchTo("next", ATC_CONFIG.crossfade.skipSeconds, "failure");
         this.scheduleRotation();
       } else if (this.tapeReadyForSwitch(this.spare)) {
-        void this.switchTo("spare", ATC_CONFIG.crossfade.skipSeconds);
+        void this.switchTo("spare", ATC_CONFIG.crossfade.skipSeconds, "failure");
       } else {
         void this.armTape(
           tape,
@@ -522,7 +676,7 @@ export class AtcStreamingLayer {
     if (!this.running || tape !== this.active) return;
     // Ran off the end of a tape — rotate immediately.
     if (this.tapeReadyForSwitch(this.next)) {
-      void this.switchTo("next", ATC_CONFIG.crossfade.skipSeconds);
+      void this.switchTo("next", ATC_CONFIG.crossfade.skipSeconds, "tape-ended");
       this.scheduleRotation();
     } else {
       this.handleTapeFailure(tape, "tape ended with no ready target");
@@ -551,6 +705,7 @@ export class AtcStreamingLayer {
     if (this.mode === mode) return;
     this.mode = mode;
     this.onStatus?.(mode);
+    this.emitDebug("mode", `failover rung → ${this.mode}`);
   }
 
   /** Silently probe the network forever (exponential backoff). */
@@ -599,6 +754,17 @@ export class AtcStreamingLayer {
   }
 
   /* ---------------------------------------------------------------- */
+
+  /**
+   * Clear the silence/static timer and its rolling frame buffer. Call this
+   * whenever the playhead jumps discontinuously (tape switch, silence skip,
+   * in-place seek) so frames from before the jump never get classified
+   * together with frames from after it.
+   */
+  private resetVoiceTracking(): void {
+    this.silenceStartedAt = null;
+    this.voiceFrames = [];
+  }
 
   private clearPostponePoll(): void {
     if (this.postponePoll) {

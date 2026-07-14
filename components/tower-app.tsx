@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAudioEngine } from "@/lib/audio/use-audio-engine";
 import { Atmosphere } from "./atmosphere";
+import { DebugPanel } from "./debug-panel";
 import { Fader } from "./fader";
 import { PlayButton } from "./play-button";
 import { SleepTimer } from "./sleep-timer";
@@ -46,6 +47,7 @@ export function TowerApp() {
     timer,
     setTimer,
     remainingSeconds,
+    debug,
   } = useAudioEngine();
   const zulu = useZuluClock();
 
@@ -76,7 +78,7 @@ export function TowerApp() {
   }, [isPlaying, remainingSeconds]);
 
   return (
-    <div className="selection:bg-accent/30 animate-tower-in relative flex min-h-dvh w-full flex-col overflow-hidden">
+    <div className="selection:bg-accent/30 animate-tower-in relative flex min-h-dvh w-full flex-col overflow-hidden pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
       <Atmosphere />
 
       {/* Header */}
@@ -123,6 +125,8 @@ export function TowerApp() {
 
         <SleepTimer value={timer} onChange={setTimer} />
       </footer>
+
+      {process.env.NODE_ENV !== "production" && <DebugPanel debug={debug} />}
     </div>
   );
 }

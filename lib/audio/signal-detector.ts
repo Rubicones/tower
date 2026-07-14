@@ -25,10 +25,18 @@ export interface FrameFeatures {
 export interface Verdict {
   /** Any signal at all above the silence floor. */
   hasSignal: boolean;
-  /** A real transmission (speech-like), not hiss / static / dead air. */
+  /** A real transmission (speech-like), not hiss / static / dead air / tone. */
   isVoice: boolean;
   /** Voice-likeness, higher is better; used to keep the best of N attempts. */
   score: number;
+  /**
+   * Loudest-minus-quietest frame in the window, dB. Speech's energy envelope
+   * swings hard between syllables and pauses; steady noise (hiss, carrier
+   * hum, a squelch tone) barely moves. Spectral shape alone can't tell voice
+   * apart from a steady tone that happens to sit in the speech band with a
+   * non-flat spectrum — this catches that case.
+   */
+  modulationDb: number;
 }
 
 const EPS = 1e-10;
@@ -87,12 +95,17 @@ export function spectralFeatures(
  */
 export function classifyListen(frames: FrameFeatures[]): Verdict {
   if (frames.length === 0) {
-    return { hasSignal: false, isVoice: false, score: -Infinity };
+    return { hasSignal: false, isVoice: false, score: -Infinity, modulationDb: 0 };
   }
 
   let peakDb = -Infinity;
-  for (const f of frames) peakDb = Math.max(peakDb, f.db);
+  let minDb = Infinity;
+  for (const f of frames) {
+    peakDb = Math.max(peakDb, f.db);
+    minDb = Math.min(minDb, Number.isFinite(f.db) ? f.db : minDb);
+  }
   const hasSignal = peakDb >= ATC_CONFIG.silence.thresholdDb;
+  const modulationDb = Number.isFinite(minDb) ? peakDb - minDb : 0;
 
   // Weight each frame's features by how loud it is, so quiet inter-word gaps
   // don't drag the speech-band ratio down toward the noise floor.
@@ -112,11 +125,17 @@ export function classifyListen(frames: FrameFeatures[]): Verdict {
   const isVoice =
     hasSignal &&
     avgSpeechRatio >= v.minSpeechBandRatio &&
-    avgFlatness <= v.maxFlatness;
+    avgFlatness <= v.maxFlatness &&
+    // Spectral shape alone lets a steady tone (carrier hum, squelch, colored
+    // static) masquerade as voice — it can land in-band and non-flat too.
+    // Require the window to actually swing in level the way speech does.
+    modulationDb >= v.minModulationDb;
 
-  // Higher when energy is in-band and non-flat; -Infinity for true silence so
-  // dead air never wins the "best candidate" tie-break.
-  const score = hasSignal ? avgSpeechRatio - avgFlatness : -Infinity;
+  // Higher when energy is in-band, non-flat, and modulating; -Infinity for
+  // true silence so dead air never wins the "best candidate" tie-break.
+  const score = hasSignal
+    ? avgSpeechRatio - avgFlatness + modulationDb / 40
+    : -Infinity;
 
-  return { hasSignal, isVoice, score };
+  return { hasSignal, isVoice, score, modulationDb };
 }

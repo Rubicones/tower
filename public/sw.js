@@ -12,13 +12,18 @@
  * /public/audio/atc/fallback/), which does not depend on this worker.
  */
 
-const APP_CACHE = "tower-app-v3";
+const APP_CACHE = "tower-app-v5";
 
 const PRECACHE_URLS = [
   "/",
   "/manifest.webmanifest",
+  "/favicon.png",
+  "/icons/icon-16.png",
+  "/icons/icon-32.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
+  "/icons/icon-512-maskable.png",
+  "/icons/apple-touch-icon.png",
   "/audio/silence.mp3",
   "/audio/atc/fallback/fallback-01.mp3",
   "/audio/atc/fallback/fallback-02.mp3",
