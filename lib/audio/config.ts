@@ -52,6 +52,13 @@ export const ATC_CONFIG = {
     /** Muted pre-roll listen when preparing a tape (avoid silent landings). */
     prerollSeconds: 1.2,
     prerollReseekAttempts: 3,
+    /**
+     * Apply the same pre-roll listen to the very first tape so playback opens
+     * on radio activity instead of dead air / hiss (re-seeks until it lands on
+     * signal above `thresholdDb`). Adds a small startup delay. Disable to start
+     * instantly wherever the random seek happens to land.
+     */
+    startOnSignal: true,
   },
 
   crossfade: {

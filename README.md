@@ -132,15 +132,17 @@ the next rotation, so recovery is inaudible. The current rung is surfaced throug
 
 ### Service worker (`public/sw.js`, production only)
 
-Two caches:
+Caches only **same-origin** assets: `/`, the web manifest, icons, `silence.mp3`,
+and the three fallback clips (cache-first), plus `/_next/static/` chunks.
 
-- **App shell** — `/`, the web manifest, icons, `silence.mp3`, and the three
-  fallback clips (cache-first).
-- **Audio pool** — archive.org tape responses. Because playback uses HTTP range
-  requests, each entry is one byte-range; range (`206`) responses are normalised
-  to a `200` for storage and reconstructed into a real `206` on serve. The pool
-  is capped at **~200 MB** with LRU eviction, so a night of playback becomes a
-  local pool the app can fall back on when the network drops.
+The service worker deliberately **does not** intercept archive.org. The tapes are
+streamed with open-ended HTTP range requests that the media element aborts on
+every seek; a worker cannot cache/replay those `206` responses without forcing
+full-file downloads and breaking the media pipeline ("ServiceWorker intercepted
+the request and encountered an unexpected error"). Range streaming and its cache
+are left to the browser, which handles them natively. Offline resilience comes
+from the in-app **failover ladder** (live → session replay → bundled fallbacks),
+not from the worker.
 
 ### Mobile / lock screen
 

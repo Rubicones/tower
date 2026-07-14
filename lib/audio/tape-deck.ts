@@ -69,6 +69,18 @@ export class Tape {
     this.el = el;
 
     this.gain = new tone.Gain(0);
+    // Force a stable stereo output. Different tapes (and the fallback clips)
+    // are mono or stereo; without this, the channel count entering the shared
+    // BiquadFilters flips when a new file loads → "channel count changes may
+    // produce audio glitches" and audible clicks. Explicit 2-ch upmixes mono
+    // sources so downstream topology never changes.
+    try {
+      this.gain.channelCount = 2;
+      this.gain.channelCountMode = "explicit";
+      this.gain.channelInterpretation = "speakers";
+    } catch {
+      // Some engines disallow overriding these; the graph still works.
+    }
     this.gain.connect(bus);
     this.meter = new tone.Meter({ smoothing: 0.8 });
     this.source = tone.getContext().createMediaElementSource(el);
@@ -166,28 +178,52 @@ export class Tape {
   /** Start playing and fade in (equal-power) over `seconds`. */
   async fadeIn(seconds: number): Promise<void> {
     this.state = "playing";
-    this.applyFade(equalPowerCurve(0, 1), seconds);
+    // Keep the element silent until playback has actually started, then ramp.
+    // Scheduling the ramp before play() resolves (mobile latency) makes the
+    // audio pop in at a partial gain.
+    this.gain.gain.cancelScheduledValues(this.tone.now());
+    this.gain.gain.value = 0;
     try {
       await this.el.play();
     } catch (error) {
       this.fail(`play() rejected: ${String(error)}`);
       throw error;
     }
+    if (this.disposed) return;
+    this.applyFade(equalPowerCurve(this.gain.gain.value, 1), seconds);
   }
 
   /** Fade out over `seconds`, then pause the element. */
   fadeOut(seconds: number): void {
-    this.applyFade(equalPowerCurve(1, 0), seconds);
+    this.applyFade(equalPowerCurve(this.gain.gain.value, 0), seconds);
     const generation = this.generation;
     setTimeout(
       () => {
         if (this.generation === generation && !this.disposed) {
+          // Guarantee true silence before pausing so the stop never clicks.
+          this.gain.gain.cancelScheduledValues(this.tone.now());
+          this.gain.gain.value = 0;
           this.el.pause();
           if (this.state === "playing") this.state = "ready";
         }
       },
-      seconds * 1000 + 50,
+      seconds * 1000 + 120,
     );
+  }
+
+  /**
+   * Seek the currently-playing element with a tiny gain dip so the jump
+   * doesn't click (used by the in-place silence-skip fallback).
+   */
+  seekWithDip(target: number): void {
+    const now = this.tone.now();
+    const current = this.gain.gain.value;
+    const dip = 0.05;
+    this.gain.gain.cancelScheduledValues(now);
+    this.gain.gain.setValueAtTime(current, now);
+    this.gain.gain.linearRampToValueAtTime(0.0001, now + dip);
+    this.el.currentTime = target;
+    this.gain.gain.linearRampToValueAtTime(current, now + dip * 2);
   }
 
   /** Hard-mute and stop without fades (used on pause/dispose). */

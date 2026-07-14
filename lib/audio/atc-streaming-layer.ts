@@ -179,10 +179,12 @@ export class AtcStreamingLayer {
   /* ---------------------------------------------------------------- */
 
   private async launch(): Promise<void> {
+    // Skip a silent/hissy intro so the first thing heard is a transmission
+    // (config-toggleable via silence.startOnSignal).
     const ok = await this.armTape(
       this.active,
       ATC_CONFIG.buffering.initialStartAheadSeconds,
-      false,
+      ATC_CONFIG.silence.startOnSignal,
     );
     if (!this.running) return;
     if (ok) {
@@ -418,7 +420,7 @@ export class AtcStreamingLayer {
     const canSeekInPlace = Number.isFinite(el.duration) && target < safeMax;
 
     if (canSeekInPlace) {
-      el.currentTime = target;
+      this.active.seekWithDip(target);
       const seekStartedAt = Date.now();
       const stallPoll = setInterval(() => {
         if (!this.running) {
