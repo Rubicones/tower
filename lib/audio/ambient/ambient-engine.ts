@@ -1,4 +1,5 @@
 import type { Gain } from "tone";
+import type { AudioQuality } from "../perf";
 import type { ToneModule, Transport } from "../types";
 import { EffectsBus } from "./effects-bus";
 import { HarmonyEngine, type KeyState } from "./harmony-engine";
@@ -36,12 +37,17 @@ export class AmbientEngine {
    * @param output          the ambient master volume node (music fader)
    * @param sidechainSource the ATC output, tapped for the ducking follower
    */
-  constructor(tone: ToneModule, output: Gain, sidechainSource: Gain) {
+  constructor(
+    tone: ToneModule,
+    output: Gain,
+    sidechainSource: Gain,
+    quality: AudioQuality,
+  ) {
     this.transport = tone.getTransport();
     this.harmony = new HarmonyEngine(INITIAL_KEY);
     this.registry = new NoteRegistry();
 
-    this.bus = new EffectsBus(tone);
+    this.bus = new EffectsBus(tone, quality);
     this.bus.connect(output);
     this.bus.attachSidechain(sidechainSource);
 
@@ -49,6 +55,7 @@ export class AmbientEngine {
       tone,
       registry: this.registry,
       bus: this.bus,
+      quality,
     });
     this.keyScheduler = new KeyScheduler(this.transport, this.harmony, this.layers);
   }

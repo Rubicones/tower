@@ -109,6 +109,20 @@ A pre-gain `Meter` watches the summed tape bus ~10×/second.
   for the spare. Dead air is tolerated only up to `allowedPause + grace`; beyond
   that a warning is logged.
 
+#### Start on a live transmission (`signal-detector.ts`)
+
+Being above the silence floor isn't the same as being *worth hearing* — carrier
+hiss / static clears `silence.thresholdDb` easily. So the **first** tape is
+auditioned with a stronger test (`require-voice`): the muted pre-roll listen
+samples both the RMS meter **and** an FFT, and a spot only opens playback if its
+energy is concentrated in the speech band (300–3000 Hz) and its spectrum isn't
+noise-flat (low spectral flatness). Static is broadband and flat, so it's
+rejected and the deck re-seeks. If none of `voice.reseekAttempts` random spots
+qualifies, playback opens on the most voice-like one seen — so hitting play
+lands on talking, not hiss. Rotations and skips keep the lighter
+`avoid-silence` test (they only dodge dead air). Tune the discriminators in
+`config.ts` ▸ `voice`; toggle the whole behaviour with `silence.startOnSignal`.
+
 ### Failover ladder (`atc-streaming-layer.ts`)
 
 Automatic, always via crossfade, three rungs:

@@ -9,6 +9,7 @@ import type {
   Reverb,
   ToneAudioNode,
 } from "tone";
+import type { AudioQuality } from "../perf";
 import type { ToneModule } from "../types";
 
 /* -------------------------------------------------------------------------- */
@@ -25,7 +26,6 @@ const RETURN_HP_HZ = 300;
 const RETURN_LP_HZ = 7500;
 
 /** Sidechain envelope follower (reads the ATC output, in dBFS). */
-const SIDECHAIN_POLL_MS = 50;
 const SIDECHAIN_ATTACK_MS = 80; // fast: duck quickly when speech starts
 const SIDECHAIN_RELEASE_MS = 600; // slow: recover gently after speech
 const DUCK_START_DB = -45; // below this the radio is treated as silent
@@ -72,7 +72,10 @@ export class EffectsBus {
   private sidechainTimer: ReturnType<typeof setInterval> | null = null;
   private envDb = DB_FLOOR;
 
-  constructor(private readonly tone: ToneModule) {
+  constructor(
+    private readonly tone: ToneModule,
+    private readonly quality: AudioQuality,
+  ) {
     this.limiter = new tone.Limiter(-2);
     this.comp = new tone.Compressor({
       threshold: -18,
@@ -98,7 +101,7 @@ export class EffectsBus {
     this.input = new tone.Gain(1).connect(this.mix);
 
     // Shared reverb return, high/low-passed so tails never muddy the voice.
-    this.reverb = new tone.Reverb({ decay: 6, wet: 1 });
+    this.reverb = new tone.Reverb({ decay: quality.ambientReverbDecay, wet: 1 });
     this.reverbHp = new tone.Filter({ type: "highpass", frequency: RETURN_HP_HZ });
     this.reverbLp = new tone.Filter({ type: "lowpass", frequency: RETURN_LP_HZ });
     this.reverbInput = new tone.Gain(1).connect(this.reverb);
@@ -134,7 +137,8 @@ export class EffectsBus {
     this.sidechainMeter = meter;
     this.envDb = DB_FLOOR;
 
-    const dt = SIDECHAIN_POLL_MS / 1000;
+    const pollMs = this.quality.sidechainPollMs;
+    const dt = pollMs / 1000;
     const attackCoef = Math.exp(-dt / (SIDECHAIN_ATTACK_MS / 1000));
     const releaseCoef = Math.exp(-dt / (SIDECHAIN_RELEASE_MS / 1000));
 
@@ -152,8 +156,9 @@ export class EffectsBus {
         Math.max(0, (this.envDb - DUCK_START_DB) / (DUCK_FULL_DB - DUCK_START_DB)),
       );
       const target = 1 - amount * (1 - DUCK_MIN_GAIN);
-      this.duck.gain.rampTo(target, SIDECHAIN_POLL_MS / 1000);
-    }, SIDECHAIN_POLL_MS);
+      // Ramp over the poll period so consecutive updates join seamlessly.
+      this.duck.gain.rampTo(target, dt);
+    }, pollMs);
   }
 
   private detachSidechain(): void {

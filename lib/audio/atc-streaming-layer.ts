@@ -9,8 +9,10 @@ import type {
   Reverb,
 } from "tone";
 import { ATC_CONFIG } from "./config";
+import type { AudioQuality } from "./perf";
 import { Playlist } from "./playlist";
 import { randRange } from "./random";
+import type { PrerollMode } from "./signal-detector";
 import { Tape, TapeDeck } from "./tape-deck";
 import type { AtcStatus, TapeEntry, ToneModule } from "./types";
 
@@ -51,12 +53,14 @@ export class AtcStreamingLayer {
   private readonly playlist = new Playlist();
   private readonly deck: TapeDeck;
 
+  private readonly quality: AudioQuality;
+
   private readonly bus: Gain;
   private readonly mono: Mono;
   private readonly bandpass: Filter;
   private readonly grit: Distortion;
   private readonly delay: FeedbackDelay;
-  private readonly pingpong: PingPongDelay;
+  private readonly pingpong: PingPongDelay | null;
   private readonly reverb: Reverb;
   private readonly watchdog: Meter;
 
@@ -87,8 +91,9 @@ export class AtcStreamingLayer {
 
   private sessionPlayed: PlayedPosition[] = [];
 
-  constructor(tone: ToneModule, output: Gain) {
+  constructor(tone: ToneModule, output: Gain, quality: AudioQuality) {
     this.tone = tone;
+    this.quality = quality;
 
     this.bus = new tone.Gain(1);
     this.bandpass = new tone.Filter({
@@ -105,24 +110,31 @@ export class AtcStreamingLayer {
       feedback: 0.35,
       wet: 0.3,
     });
-    this.pingpong = new tone.PingPongDelay({
-      delayTime: ATC_CONFIG.pingPong.delayTime,
-      feedback: ATC_CONFIG.pingPong.feedback,
-      wet: ATC_CONFIG.pingPong.wet,
-    });
-    this.reverb = new tone.Reverb({ decay: 7, wet: 0.5 });
+    // The ping-pong is a second, stereo delay purely for width; on low-power
+    // devices it's dropped (two extra delay lines' worth of work) and the mono
+    // feedback delay alone carries the echoes.
+    this.pingpong = quality.pingPongEnabled
+      ? new tone.PingPongDelay({
+          delayTime: ATC_CONFIG.pingPong.delayTime,
+          feedback: ATC_CONFIG.pingPong.feedback,
+          wet: ATC_CONFIG.pingPong.wet,
+        })
+      : null;
+    this.reverb = new tone.Reverb({ decay: quality.atcReverbDecay, wet: 0.5 });
 
     // Sum the tape bus to mono first, so the dry radio is centered; the
     // ping-pong then bounces only the echoes across L/R for slight width.
     this.mono = new tone.Mono();
     this.bus.chain(
-      this.mono,
-      this.bandpass,
-      this.grit,
-      this.delay,
-      this.pingpong,
-      this.reverb,
-      output,
+      ...[
+        this.mono,
+        this.bandpass,
+        this.grit,
+        this.delay,
+        this.pingpong,
+        this.reverb,
+        output,
+      ].filter((node): node is NonNullable<typeof node> => node !== null),
     );
 
     // RMS watchdog stays on the pre-effect bus (used for silence trimming).
@@ -170,7 +182,7 @@ export class AtcStreamingLayer {
     this.bandpass.dispose();
     this.grit.dispose();
     this.delay.dispose();
-    this.pingpong.dispose();
+    this.pingpong?.dispose();
     this.reverb.dispose();
   }
 
@@ -179,12 +191,12 @@ export class AtcStreamingLayer {
   /* ---------------------------------------------------------------- */
 
   private async launch(): Promise<void> {
-    // Skip a silent/hissy intro so the first thing heard is a transmission
-    // (config-toggleable via silence.startOnSignal).
+    // Skip silence *and* carrier hiss/static so the first thing heard is an
+    // actual transmission (config-toggleable via silence.startOnSignal).
     const ok = await this.armTape(
       this.active,
       ATC_CONFIG.buffering.initialStartAheadSeconds,
-      ATC_CONFIG.silence.startOnSignal,
+      ATC_CONFIG.silence.startOnSignal ? "require-voice" : "none",
     );
     if (!this.running) return;
     if (ok) {
@@ -192,8 +204,16 @@ export class AtcStreamingLayer {
     }
     // Pre-buffer the other two in the background regardless; failures
     // route through handleTapeFailure and the ladder.
-    void this.armTape(this.next, ATC_CONFIG.buffering.minBufferedAheadSeconds, true);
-    void this.armTape(this.spare, ATC_CONFIG.buffering.minBufferedAheadSeconds, true);
+    void this.armTape(
+      this.next,
+      ATC_CONFIG.buffering.minBufferedAheadSeconds,
+      "avoid-silence",
+    );
+    void this.armTape(
+      this.spare,
+      ATC_CONFIG.buffering.minBufferedAheadSeconds,
+      "avoid-silence",
+    );
     this.scheduleRotation();
   }
 
@@ -285,7 +305,7 @@ export class AtcStreamingLayer {
     void this.armTape(
       freed,
       ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      true,
+      "avoid-silence",
     );
   }
 
@@ -330,13 +350,13 @@ export class AtcStreamingLayer {
   private async armTape(
     tape: Tape,
     minAheadSeconds: number,
-    checkPreroll: boolean,
+    preroll: PrerollMode,
   ): Promise<boolean> {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!this.running || this.disposed) return false;
       const { entry, offset } = this.pickForMode();
       try {
-        await tape.prepare(entry, offset, minAheadSeconds, checkPreroll);
+        await tape.prepare(entry, offset, minAheadSeconds, preroll);
         return true;
       } catch (error) {
         if (!this.running || this.disposed) return false;
@@ -391,7 +411,7 @@ export class AtcStreamingLayer {
           "[tower] dead air exceeded allowed pause + grace while waiting for a skip target",
         );
       }
-    }, ATC_CONFIG.silence.meterIntervalMs);
+    }, this.quality.watchdogMeterMs);
   }
 
   /** Skip dead air: crossfade into the spare (does NOT reset rotation). */
@@ -482,7 +502,7 @@ export class AtcStreamingLayer {
         void this.armTape(
           tape,
           ATC_CONFIG.buffering.initialStartAheadSeconds,
-          false,
+          "none",
         ).then((ok) => {
           if (ok && this.running && tape === this.active) {
             void this.playTape(tape, ATC_CONFIG.crossfade.skipSeconds);
@@ -494,7 +514,7 @@ export class AtcStreamingLayer {
     void this.armTape(
       tape,
       ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      true,
+      "avoid-silence",
     );
   };
 
@@ -562,8 +582,16 @@ export class AtcStreamingLayer {
       this.recoveryBackoffMs = ATC_CONFIG.failover.recoveryBackoffInitialMs;
       this.setMode("streaming");
       if (this.running) {
-        void this.armTape(this.next, ATC_CONFIG.buffering.minBufferedAheadSeconds, true);
-        void this.armTape(this.spare, ATC_CONFIG.buffering.minBufferedAheadSeconds, true);
+        void this.armTape(
+          this.next,
+          ATC_CONFIG.buffering.minBufferedAheadSeconds,
+          "avoid-silence",
+        );
+        void this.armTape(
+          this.spare,
+          ATC_CONFIG.buffering.minBufferedAheadSeconds,
+          "avoid-silence",
+        );
       }
     } catch {
       this.scheduleRecoveryProbe();

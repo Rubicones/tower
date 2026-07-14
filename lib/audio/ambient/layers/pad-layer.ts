@@ -6,7 +6,6 @@ import { ScheduledLayer, type LayerContext } from "./base";
 const REGISTER: Register = { low: 52, high: 76 };
 const PERIOD_MIN_S = 40;
 const PERIOD_MAX_S = 54; // centred near the ~47 s coprime target
-const MAX_VOICES = 10;
 const CHORD_MIN = 2;
 const CHORD_MAX = 4;
 
@@ -30,7 +29,7 @@ export class PadLayer extends ScheduledLayer {
       envelope: { attack: 3.5, decay: 2, sustain: 0.7, release: 9 },
       volume: -15,
     });
-    this.synth.maxPolyphony = MAX_VOICES;
+    this.synth.maxPolyphony = ctx.quality.padMaxVoices;
     this.synth.connect(ctx.bus.input);
 
     this.reverbSend = new tone.Gain(0.35);

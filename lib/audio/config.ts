@@ -61,6 +61,40 @@ export const ATC_CONFIG = {
     startOnSignal: true,
   },
 
+  /**
+   * Voice detection for the *first* tape. Being above the silence floor isn't
+   * enough — carrier hiss / static clears `silence.thresholdDb` easily, so on
+   * start we additionally require a spot that looks like an actual
+   * transmission (speech energy, not broadband noise) before opening playback.
+   * A short FFT + RMS listen classifies each candidate; if none of the
+   * attempts qualifies, the most voice-like spot found is used.
+   *
+   * Discriminators (both cheap, computed on the muted pre-roll listen):
+   * - `minSpeechBandRatio` — fraction of energy inside the speech band. Voice
+   *   concentrates in 300–3000 Hz; flat hiss spreads energy up past it.
+   * - `maxFlatness` — spectral flatness (geo-mean / arithmetic-mean of the
+   *   power spectrum). White noise ≈ 1; voiced speech is far lower.
+   */
+  voice: {
+    /** Re-seeks allowed while hunting for a live transmission at start. */
+    reseekAttempts: 5,
+    /** Speech energy band (Hz). */
+    bandLowHz: 300,
+    bandHighHz: 3000,
+    /** Full band the ratio is measured against (Hz). */
+    totalLowHz: 120,
+    totalHighHz: 8000,
+    /** Band spectral flatness is measured over (Hz). */
+    flatnessLowHz: 300,
+    flatnessHighHz: 6000,
+    /** Min share of energy in the speech band for a spot to count as voice. */
+    minSpeechBandRatio: 0.6,
+    /** Max spectral flatness (0–1) for a spot to count as voice. */
+    maxFlatness: 0.45,
+    /** FFT size for the listen (power of two, 16–16384). */
+    fftSize: 1024,
+  },
+
   crossfade: {
     rotationSeconds: 4.5,
     /** Silence-skip crossfade — shorter than rotation. */

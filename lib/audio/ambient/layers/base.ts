@@ -1,3 +1,4 @@
+import type { AudioQuality } from "../../perf";
 import { randRange } from "../../random";
 import type { ToneModule, Transport } from "../../types";
 import type { EffectsBus } from "../effects-bus";
@@ -18,6 +19,8 @@ export interface LayerContext {
   bus: EffectsBus;
   /** Global voice cap across all layers. */
   maxPolyphony: number;
+  /** Device-aware quality profile (polyphony ceilings, etc.). */
+  quality: AudioQuality;
 }
 
 /** The lifecycle every ambient layer exposes to the LayerManager. */

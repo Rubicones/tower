@@ -1,3 +1,4 @@
+import type { AudioQuality } from "../perf";
 import type { Transport } from "../types";
 import type { EffectsBus } from "./effects-bus";
 import type { HarmonyEngine, KeyState } from "./harmony-engine";
@@ -8,9 +9,6 @@ import type { AmbientLayerModule, LayerContext } from "./layers/base";
 import { DroneLayer } from "./layers/drone-layer";
 import { PadLayer } from "./layers/pad-layer";
 import { TextureLayer } from "./layers/texture-layer";
-
-/** Global voice cap across every layer (Tone PolySynth headroom + margin). */
-const MAX_POLYPHONY = 18;
 
 /** Staggered entry of each layer into the new key — the drift reads as gradual. */
 const PAD_STAGGER_S = 4;
@@ -40,6 +38,7 @@ export class LayerManager implements Modulator {
       tone: LayerContext["tone"];
       registry: NoteRegistry;
       bus: EffectsBus;
+      quality: AudioQuality;
     },
   ) {
     const ctx: LayerContext = {
@@ -48,7 +47,8 @@ export class LayerManager implements Modulator {
       harmony,
       registry: ctxParts.registry,
       bus: ctxParts.bus,
-      maxPolyphony: MAX_POLYPHONY,
+      maxPolyphony: ctxParts.quality.maxPolyphony,
+      quality: ctxParts.quality,
     };
     this.drone = new DroneLayer(ctx);
     this.pad = new PadLayer(ctx);

@@ -1,6 +1,7 @@
 import type { Gain, Limiter, Reverb } from "tone";
 import { AmbientEngine } from "./ambient/ambient-engine";
 import { AtcStreamingLayer } from "./atc-streaming-layer";
+import { type AudioQuality, detectQuality } from "./perf";
 import type { AtcStatus, ToneModule } from "./types";
 
 /** Ceiling gains per layer; the ambient layer sits well under the radio. */
@@ -37,6 +38,9 @@ export class AudioEngine {
   private building: Promise<void> | null = null;
   private disposed = false;
   private running = false;
+  private contextReady = false;
+
+  private readonly quality: AudioQuality = detectQuality();
 
   private limiter: Limiter | null = null;
   private fadeGain: Gain | null = null;
@@ -66,6 +70,13 @@ export class AudioEngine {
   async start(): Promise<void> {
     if (this.disposed || this.running) return;
     const tone = (this.tone ??= await import("tone"));
+    // Install a context with our chosen latency hint *before* anything is
+    // built or started. "playback" (low-power devices) buys a larger audio
+    // buffer, which is the main defense against render-thread underrun clicks.
+    if (!this.contextReady) {
+      tone.setContext(new tone.Context({ latencyHint: this.quality.latencyHint }));
+      this.contextReady = true;
+    }
     await tone.start();
     await (this.building ??= this.build(tone));
     if (this.disposed) return;
@@ -132,11 +143,19 @@ export class AudioEngine {
     this.limiter = new tone.Limiter(-3).toDestination();
     this.fadeGain = new tone.Gain(1).connect(this.limiter);
 
-    // Master reverb as a send off the summed layers, for shared "air".
-    this.masterReverb = new tone.Reverb({ decay: 5, wet: 1 });
-    this.reverbSend = new tone.Gain(0.15).connect(this.masterReverb);
-    this.masterReverb.connect(this.limiter);
-    this.fadeGain.connect(this.reverbSend);
+    // Master reverb as a send off the summed layers, for shared "air". On
+    // low-power devices this whole convolution reverb is skipped — the two
+    // sub-layers already carry their own reverbs, so dropping the third saves
+    // the most expensive node in the graph without silencing anything.
+    if (this.quality.masterReverbEnabled) {
+      this.masterReverb = new tone.Reverb({
+        decay: this.quality.masterReverbDecay,
+        wet: 1,
+      });
+      this.reverbSend = new tone.Gain(0.15).connect(this.masterReverb);
+      this.masterReverb.connect(this.limiter);
+      this.fadeGain.connect(this.reverbSend);
+    }
 
     this.radioGain = new tone.Gain(
       sliderToGain(this.radioLevel, RADIO_MAX_GAIN),
@@ -145,19 +164,24 @@ export class AudioEngine {
       sliderToGain(this.musicLevel, MUSIC_MAX_GAIN),
     ).connect(this.fadeGain);
 
-    this.atc = new AtcStreamingLayer(tone, this.radioGain);
+    this.atc = new AtcStreamingLayer(tone, this.radioGain, this.quality);
     this.atc.onStatus = (status) => {
       this.status = status;
       this.onStatus?.(status);
     };
     // The ambient engine ducks against the live ATC signal, so hand it the
     // radio output node as its sidechain source.
-    this.ambient = new AmbientEngine(tone, this.musicGain, this.radioGain);
+    this.ambient = new AmbientEngine(
+      tone,
+      this.musicGain,
+      this.radioGain,
+      this.quality,
+    );
 
     await Promise.all([
       this.atc.init(),
       this.ambient.init(),
-      this.masterReverb.ready,
+      this.masterReverb?.ready ?? Promise.resolve(),
     ]);
   }
 

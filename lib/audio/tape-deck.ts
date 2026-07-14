@@ -1,6 +1,13 @@
-import type { Gain, Meter } from "tone";
+import type { FFT, Gain, Meter } from "tone";
 import { ATC_CONFIG } from "./config";
 import { randRange } from "./random";
+import {
+  classifyListen,
+  type FrameFeatures,
+  type PrerollMode,
+  spectralFeatures,
+  type Verdict,
+} from "./signal-detector";
 import type { TapeEntry, ToneModule } from "./types";
 
 export type TapeState = "idle" | "preparing" | "ready" | "playing" | "failed";
@@ -46,6 +53,7 @@ export class Tape {
 
   private readonly tone: ToneModule;
   private readonly meter: Meter;
+  private readonly fft: FFT;
   private readonly source: MediaElementAudioSourceNode;
   private readonly callbacks: TapeCallbacks;
   private generation = 0;
@@ -83,9 +91,13 @@ export class Tape {
     }
     this.gain.connect(bus);
     this.meter = new tone.Meter({ smoothing: 0.8 });
+    // Pre-gain FFT, tapped alongside the meter, used only during the muted
+    // pre-roll listen to tell live transmissions from carrier hiss / static.
+    this.fft = new tone.FFT({ size: ATC_CONFIG.voice.fftSize, smoothing: 0 });
     this.source = tone.getContext().createMediaElementSource(el);
     tone.connect(this.source, this.gain);
     tone.connect(this.source, this.meter);
+    tone.connect(this.source, this.fft);
 
     el.addEventListener("error", this.handleError);
     el.addEventListener("stalled", this.handleWaiting);
@@ -137,7 +149,7 @@ export class Tape {
     entry: TapeEntry,
     offset: number | null,
     minAheadSeconds: number,
-    checkPreroll: boolean,
+    preroll: PrerollMode,
   ): Promise<void> {
     const generation = ++this.generation;
     this.entry = entry;
@@ -155,24 +167,61 @@ export class Tape {
     this.el.currentTime = target;
     await this.waitForBuffer(generation, minAheadSeconds);
 
-    if (checkPreroll) {
-      let attempts = 0;
-      while (
-        attempts < ATC_CONFIG.silence.prerollReseekAttempts &&
-        (await this.prerollIsSilent(generation))
-      ) {
-        attempts += 1;
-        target = this.clampOffset(
-          randRange(0, this.el.duration || entry.lengthSeconds || 0),
-        );
-        this.el.currentTime = target;
-        await this.waitForBuffer(generation, minAheadSeconds);
-      }
+    if (preroll !== "none") {
+      target = await this.huntForSpot(generation, minAheadSeconds, preroll, target);
     }
 
     this.assertCurrent(generation);
     this.el.pause();
     this.state = "ready";
+  }
+
+  /**
+   * Audition the current spot and re-seek until it's acceptable for `mode`:
+   * `avoid-silence` stops at the first spot with any signal; `require-voice`
+   * hunts for an actual transmission and, if none of the attempts qualifies,
+   * lands on the most voice-like spot seen. Returns the final offset.
+   */
+  private async huntForSpot(
+    generation: number,
+    minAheadSeconds: number,
+    mode: Exclude<PrerollMode, "none">,
+    initial: number,
+  ): Promise<number> {
+    const maxAttempts =
+      mode === "require-voice"
+        ? ATC_CONFIG.voice.reseekAttempts
+        : ATC_CONFIG.silence.prerollReseekAttempts;
+
+    let target = initial;
+    let bestOffset = initial;
+    let bestScore = -Infinity;
+
+    for (let attempt = 0; ; attempt++) {
+      const verdict = await this.prerollListen(generation);
+      const accepted =
+        mode === "require-voice" ? verdict.isVoice : verdict.hasSignal;
+      if (verdict.score > bestScore) {
+        bestScore = verdict.score;
+        bestOffset = target;
+      }
+      if (accepted || attempt >= maxAttempts - 1) break;
+
+      target = this.clampOffset(
+        randRange(0, this.el.duration || this.entry?.lengthSeconds || 0),
+      );
+      this.el.currentTime = target;
+      await this.waitForBuffer(generation, minAheadSeconds);
+    }
+
+    // Exhausted the hunt without a clear win — drop onto the best spot found
+    // (only worth a re-seek + re-buffer when it isn't already where we are).
+    if (mode === "require-voice" && bestOffset !== target) {
+      target = bestOffset;
+      this.el.currentTime = target;
+      await this.waitForBuffer(generation, minAheadSeconds);
+    }
+    return target;
   }
 
   /** Start playing and fade in (equal-power) over `seconds`. */
@@ -249,6 +298,7 @@ export class Tape {
     this.source.disconnect();
     this.gain.dispose();
     this.meter.dispose();
+    this.fft.dispose();
   }
 
   /* ---------------------------------------------------------------- */
@@ -341,17 +391,19 @@ export class Tape {
   }
 
   /**
-   * Muted listen: play ~1.2 s with gain at 0 and sample the pre-gain
-   * meter. Returns true when the landing spot is silent.
+   * Muted listen: play ~1.2 s with gain at 0 while sampling the pre-gain meter
+   * (RMS) and FFT (spectrum), then classify the spot as silence / static /
+   * voice. If the element refuses to play we can't listen, so the spot is
+   * accepted as voice.
    */
-  private async prerollIsSilent(generation: number): Promise<boolean> {
+  private async prerollListen(generation: number): Promise<Verdict> {
     this.gain.gain.value = 0;
     try {
       await this.el.play();
     } catch {
-      return false; // Can't listen ahead — accept the spot.
+      return { hasSignal: true, isVoice: true, score: 0 };
     }
-    let peak = -Infinity;
+    const frames: FrameFeatures[] = [];
     const samples = Math.ceil(
       (ATC_CONFIG.silence.prerollSeconds * 1000) /
         ATC_CONFIG.silence.meterIntervalMs,
@@ -361,10 +413,14 @@ export class Tape {
         setTimeout(r, ATC_CONFIG.silence.meterIntervalMs),
       );
       this.assertCurrent(generation);
-      peak = Math.max(peak, this.levelDb());
+      frames.push(
+        spectralFeatures(this.levelDb(), this.fft.getValue(), (index) =>
+          this.fft.getFrequencyOfIndex(index),
+        ),
+      );
     }
     this.el.pause();
-    return peak < ATC_CONFIG.silence.thresholdDb;
+    return classifyListen(frames);
   }
 
   private fail(reason: string): void {
