@@ -112,6 +112,8 @@ export class AtcStreamingLayer {
   private rotationTimer: ReturnType<typeof setTimeout> | null = null;
   private postponePoll: ReturnType<typeof setInterval> | null = null;
   private watchdogInterval: ReturnType<typeof setInterval> | null = null;
+  /** Deferred re-arms of freed tapes; kept so they can be cancelled on stop. */
+  private rearmTimers: Set<ReturnType<typeof setTimeout>> = new Set();
 
   private silenceStartedAt: number | null = null;
   private allowedPauseMs = 0;
@@ -413,18 +415,13 @@ export class AtcStreamingLayer {
         `playing ${this.active.entry?.title ?? this.active.entry?.identifier ?? "?"} @ ${Math.round(this.active.el.currentTime)}s`,
       );
     }
-    // Pre-buffer the other two in the background regardless; failures
-    // route through handleTapeFailure and the ladder.
-    void this.armTape(
-      this.next,
-      ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "require-voice",
-    );
-    void this.armTape(
-      this.spare,
-      ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "require-voice",
-    );
+    // Pre-buffer the other two, but staggered and only after the first tape's
+    // fade-in — each prepare loads a file and runs a muted preroll listen, and
+    // two of them plus the just-started active tape plus the ambient engine
+    // spinning up all at once is a startup spike that clicks a second in.
+    // Failures route through handleTapeFailure and the ladder.
+    this.scheduleRearm(this.next, ATC_CONFIG.crossfade.startSeconds * 1000 + 400);
+    this.scheduleRearm(this.spare, ATC_CONFIG.crossfade.startSeconds * 1000 + 3500);
     this.scheduleRotation();
   }
 
@@ -522,11 +519,30 @@ export class AtcStreamingLayer {
       `${reason} → ${role} (${target.entry?.title ?? target.entry?.identifier ?? "?"} @ ${Math.round(target.el.currentTime)}s)`,
     );
 
-    void this.armTape(
-      freed,
-      ATC_CONFIG.buffering.minBufferedAheadSeconds,
-      "require-voice",
-    );
+    // Re-arm the freed tape *after* the crossfade audio has finished, not
+    // during it. Preparing a tape swaps `src`, calls load(), buffers over the
+    // network and runs a muted preroll listen that actually plays the element
+    // and runs an FFT — a real CPU + decode + network spike. Doing that while
+    // two other elements are mid-crossfade is what starves the render thread
+    // and clicks at the exact moment of every trim/skip/rotation. Deferring it
+    // past the fade (the freed element is paused by then too) keeps the
+    // audio-critical window quiet; the standby tape is still ready long before
+    // the next rotation ~60-120 s out.
+    this.scheduleRearm(freed, seconds * 1000 + 400);
+  }
+
+  /** Prepare a freed tape's replacement after `delayMs`, off the hot path. */
+  private scheduleRearm(freed: Tape, delayMs: number): void {
+    const timer = setTimeout(() => {
+      this.rearmTimers.delete(timer);
+      if (!this.running || this.disposed) return;
+      void this.armTape(
+        freed,
+        ATC_CONFIG.buffering.minBufferedAheadSeconds,
+        "require-voice",
+      );
+    }, delayMs);
+    this.rearmTimers.add(timer);
   }
 
   /** Fade a tape in and record the position for the "cached" rung. */
@@ -887,5 +903,7 @@ export class AtcStreamingLayer {
       clearTimeout(this.recoveryTimer);
       this.recoveryTimer = null;
     }
+    for (const timer of this.rearmTimers) clearTimeout(timer);
+    this.rearmTimers.clear();
   }
 }

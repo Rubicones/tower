@@ -338,18 +338,37 @@ export class Tape {
   }
 
   /**
-   * Seek the currently-playing element with a tiny gain dip so the jump
-   * doesn't click (used by the in-place silence-skip fallback).
+   * Seek the currently-playing element with a gain dip so the jump doesn't
+   * click (used by the in-place silence-skip fallback). The mute is *held
+   * until the element reports it has finished seeking* (`seeked`), then ramped
+   * back — a fixed short dip like before let the gain return while the decoder
+   * was still glitching at the new position, which is audible as a clip. A
+   * timeout backstops the ramp-back in case `seeked` never fires.
    */
   seekWithDip(target: number): void {
     const now = this.tone.now();
     const current = this.gain.gain.value;
-    const dip = 0.05;
     this.gain.gain.cancelScheduledValues(now);
     this.gain.gain.setValueAtTime(current, now);
-    this.gain.gain.linearRampToValueAtTime(0.0001, now + dip);
+    this.gain.gain.linearRampToValueAtTime(0.0001, now + 0.06);
+
+    let restored = false;
+    const rampBack = (): void => {
+      if (restored || this.disposed) return;
+      restored = true;
+      this.el.removeEventListener("seeked", rampBack);
+      clearTimeout(fallback);
+      const t = this.tone.now();
+      this.gain.gain.cancelScheduledValues(t);
+      this.gain.gain.setValueAtTime(0.0001, t);
+      this.gain.gain.linearRampToValueAtTime(current, t + 0.12);
+    };
+
+    this.el.addEventListener("seeked", rampBack, { once: true });
+    const fallback = setTimeout(rampBack, 700);
+    // Start the seek after scheduling the dip; the decoder won't emit
+    // new-position audio until well after the 60 ms mute has taken hold.
     this.el.currentTime = target;
-    this.gain.gain.linearRampToValueAtTime(current, now + dip * 2);
   }
 
   /** Hard-mute and stop without fades (used on pause/dispose). */

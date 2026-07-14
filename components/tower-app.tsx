@@ -98,7 +98,7 @@ export function TowerApp() {
         <PlayButton playing={isPlaying} onToggle={toggle} />
         <p
           aria-live="polite"
-          className={`mt-5 font-mono text-[10px] uppercase tracking-[0.3em] transition-colors duration-700 sm:mt-12 ${
+          className={`mt-10 font-mono text-[10px] uppercase tracking-[0.3em] transition-colors duration-700 sm:mt-12 ${
             isPlaying ? "text-accent/85" : "text-muted"
           }`}
         >
